@@ -15,6 +15,7 @@ import 'package:flutter_face_recognition_realtime/util.dart';
 // ML Kit 얼굴 검출. "사진 속 어디에 얼굴이 있는가"를 찾아준다.
 // (누구인지 알아내는 것은 ML Kit이 아니라 우리 FaceNet 모델의 몫이다)
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+
 // 이미지 회전/자르기용. Flutter 의 Image 위젯과 이름이 겹치므로
 // `as img` 별칭을 붙여 img.Image 처럼 구분해서 쓴다.
 import 'package:image/image.dart' as img;

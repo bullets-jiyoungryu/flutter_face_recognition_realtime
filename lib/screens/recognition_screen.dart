@@ -1,14 +1,20 @@
 // Platform.isAndroid / Platform.isIOS 로 현재 OS를 판별하기 위해 필요하다.
 import 'dart:io';
+
 // ImageFilter (배경 흐림 효과) 를 쓰기 위해 필요하다.
 import 'dart:ui';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+
 // DeviceOrientation (기기 방향) 을 쓰기 위해 필요하다.
 import 'package:flutter/services.dart';
+import 'package:flutter_face_recognition_realtime/ml/recognizer.dart';
+import 'package:flutter_face_recognition_realtime/util.dart';
+
 // ML Kit 얼굴 검출. "사진 속 어디에 얼굴이 있는가"를 찾아준다.
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:image/image.dart' as img;
 
 // 전역 변수 cameras 를 쓰기 위해 main.dart 를 가져온다.
 import '../main.dart';
@@ -67,10 +73,10 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   late List<Recognition> recognitions = [];
 
   //TODO declare face detector
-  // 예) late FaceDetector faceDetector;
+  late FaceDetector faceDetector;
 
   //TODO declare face recognizer
-  // 예) late Recognizer recognizer;
+  late Recognizer recognizer;
 
   /// 화면이 처음 만들어질 때 한 번 호출된다.
   @override
@@ -78,12 +84,13 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     super.initState();
 
     //TODO initialize face detector
-    // 예) faceDetector = FaceDetector(options: FaceDetectorOptions());
+    FaceDetectorOptions options = FaceDetectorOptions(
+      performanceMode: FaceDetectorMode.fast,
+    );
+    faceDetector = FaceDetector(options: options);
 
     //TODO initialize face recognizer
-    // 예) recognizer = Recognizer();
-    // ⚠️ Recognizer 는 생성 직후 모델 로딩이 끝나지 않았을 수 있다.
-    //    바로 recognize() 를 부르면 LateInitializationError 가 날 수 있으니 주의.
+    recognizer = Recognizer();
 
     //TODO initialize camera footage
     initializeCamera();
@@ -144,6 +151,9 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   @override
   void dispose() {
     controller?.dispose();
+    faceDetector.close();
+    recognizer.close();
+    // super.dispose() 는 항상 **마지막에** 호출하는 것이 규칙이다.
     super.dispose();
   }
 
@@ -170,15 +180,32 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   /// ⚠️ 어떤 경로로 끝나든 반드시 `isBusy = false` 가 되어야 한다.
   doFaceDetectionOnFrame() async {
     //TODO convert frame into InputImage format
+    InputImage? inputImage = getInputImage();
+    if (inputImage == null) {
+      setState(() {
+        isBusy = false;
+      });
+      return;
+    }
 
     //TODO pass InputImage to face detection model and detect faces
+    List<Face> faces = await faceDetector.processImage(inputImage);
+    print('faces=' + faces.length.toString());
 
     //TODO perform face recognition on detected faces
+    performFaceRecognition(faces);
 
-    // 처리가 끝났으니 다음 프레임을 받을 수 있도록 깃발을 내린다.
-    setState(() {
-      isBusy = false;
-    });
+    // isBusy 를 내리고 _scanResults 에 결과를 담는 일은
+    // performFaceRecognition() 끝부분의 setState 가 대신 처리한다.
+    // 그래서 여기서는 아무것도 하지 않는다. (중복 setState 방지)
+    //
+    // ⚠️ 단, performFaceRecognition() 이 도중에 예외로 빠져나가면
+    //    isBusy 가 true 로 남아 이후 모든 프레임이 무시된다.
+    //    안전하게 하려면 try/finally 로 감싸 finally 에서 내려주는 것이 좋다.
+    // setState(() {
+    //   isBusy = false;
+    //   _scanResults = faces;
+    // });
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -197,80 +224,50 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   //       ①~④ 만 남기고 결과를 recognitions 에 넣도록 고쳐 쓰면 된다.
   // ─────────────────────────────────────────────────────────────
 
-  // img.Image? image;
-  // bool register = false;
-  // //TODO perform Face Recognition
-  // performFaceRecognition(List<Face> faces) async {
-  //   recognitions.clear();
-  //
-  //   //TODO convert CameraImage to Image and rotate it so that our frame will be in a portrait
-  //   image = Platform.isIOS
-  //       ? Util.convertBGRA8888ToImage(frame!)
-  //       : Util.convertNV21(frame!);
-  //   image =img.copyRotate(image!, angle: camDirec == CameraLensDirection.front?270:90);
-  //
-  //   if(register){
-  //     for (Face face in faces) {
-  //       Rect faceRect = face.boundingBox;
-  //       //TODO crop face
-  //       img.Image croppedFace = img.copyCrop(image!, x:faceRect.left.toInt(),y:faceRect.top.toInt(),width:faceRect.width.toInt(),height:faceRect.height.toInt());
-  //
-  //       //TODO pass cropped face to face recognition model
-  //
-  //
-  //       //TODO show face registration dialogue
-  //
-  //
-  //     }
-  //
-  //     register = false;
-  //   }
-  //
-  //   setState(() {
-  //     isBusy  = false;
-  //     _scanResults = faces;
-  //   });
-  //
-  // }
+  img.Image? image;
 
-  //TODO Face Registration Dialogue
-  // TextEditingController textEditingController = TextEditingController();
-  // showFaceRegistrationDialogue(img.Image croppedFace, Recognition recognition){
-  //   showDialog(
-  //     context: context,
-  //     builder: (ctx) => AlertDialog(
-  //       title: const Text("Face Registration",textAlign: TextAlign.center),alignment: Alignment.center,
-  //       content: SizedBox(
-  //         height: 340,
-  //         child: Column(
-  //           crossAxisAlignment: CrossAxisAlignment.center,
-  //           children: [
-  //             const SizedBox(height: 20,),
-  //             Image.memory(Uint8List.fromList(img.encodeBmp(croppedFace!)),width: 200,height: 200,),
-  //             SizedBox(
-  //               width: 200,
-  //               child: TextField(
-  //                   controller: textEditingController,
-  //                   decoration: const InputDecoration( fillColor: Colors.white, filled: true,hintText: "Enter Name")
-  //               ),
-  //             ),
-  //             const SizedBox(height: 10,),
-  //             ElevatedButton(
-  //                 onPressed: () {
-  //                   recognizer.registerFaceInDB(textEditingController.text, recognition.embeddings,Uint8List.fromList(img.encodeBmp(croppedFace)));
-  //                   textEditingController.text = "";
-  //                   Navigator.pop(context);
-  //                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-  //                     content: Text("Face Registered"),
-  //                   ));
-  //                 },style: ElevatedButton.styleFrom(backgroundColor:Colors.blue,minimumSize: const Size(200,40)),
-  //                 child: const Text("Register"))
-  //           ],
-  //         ),
-  //       ),contentPadding: EdgeInsets.zero,
-  //     ),
-  //   );
-  // }
+  //TODO perform Face Recognition
+  performFaceRecognition(List<Face> faces) async {
+    recognitions.clear();
+
+    //TODO convert CameraImage to Image and rotate it so that our frame will be in a portrait
+    image = Platform.isIOS
+        ? Util.convertBGRA8888ToImage(frame!)
+        : Util.convertNV21(frame!);
+    image = img.copyRotate(
+      image!,
+      angle: camDirec == CameraLensDirection.front ? 270 : 90,
+    );
+
+    for (Face face in faces) {
+      Rect faceRect = face.boundingBox;
+      //TODO crop face
+      img.Image croppedFace = img.copyCrop(
+        image!,
+        x: faceRect.left.toInt(),
+        y: faceRect.top.toInt(),
+        width: faceRect.width.toInt(),
+        height: faceRect.height.toInt(),
+      );
+
+      //TODO pass cropped face to face recognition model
+      Recognition recognition = await recognizer.recognize(
+        croppedFace,
+        faceRect,
+      );
+
+      if (recognition.distance < 0.3) {
+        recognition.name = 'Unknown';
+      }
+
+      recognitions.add(recognition);
+    }
+
+    setState(() {
+      isBusy = false;
+      _scanResults = recognitions;
+    });
+  }
 
   // //TODO convert CameraImage to InputImage
   /// 기기 방향을 각도로 바꾸기 위한 대응표.
@@ -341,29 +338,30 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   }
 
   // TODO Show rectangles around detected faces
-  // 아래 buildResult() 의 주석을 풀면 얼굴 위에 사각형과 이름표가 그려진다.
-  // build() 안의 "View for displaying rectangles" 부분 주석도 함께 풀어야 한다.
-  //
-  // ⚠️ 지금 이 코드는 `_scanResults` 를 넘기고 있는데, 이 화면의
-  //    FaceDetectorPainter 는 `List<Recognition>` 을 받도록 되어 있다.
-  //    따라서 `recognitions` 를 넘기도록 고쳐야 한다.
-  // ⚠️ imageSize 에 width/height 를 **바꿔서** 넘기는 것에 주의.
-  //    카메라 프레임이 가로로 누워 들어오기 때문이다.
-  // Widget buildResult() {
-  //   if (_scanResults == null ||
-  //       controller == null ||
-  //       !controller.value.isInitialized) {
-  //     return const Center(child: Text('Camera is not initialized'));
-  //   }
-  //   final Size imageSize = Size(
-  //     controller.value.previewSize!.height,
-  //     controller.value.previewSize!.width,
-  //   );
-  //   CustomPainter painter = FaceDetectorPainter(imageSize, _scanResults, camDirec);
-  //   return CustomPaint(
-  //     painter: painter,
-  //   );
-  // }
+  /// 인식 결과를 얼굴 위 사각형 + 이름표로 그리는 레이어를 만든다.
+  ///
+  /// build() 의 Stack 에서 카메라 프리뷰 위에 얹어 사용한다.
+  ///
+  /// ⚠️ imageSize 에 previewSize 의 width/height 를 **바꿔서** 넘기는 것에 주의.
+  ///    카메라 프레임이 가로로 누워 들어오기 때문이다.
+  ///    사각형 위치가 어긋난다면 여기를 먼저 의심하자.
+  Widget buildResult() {
+    if (_scanResults == null ||
+        controller == null ||
+        !controller.value.isInitialized) {
+      return const Center(child: Text('Camera is not initialized'));
+    }
+    final Size imageSize = Size(
+      controller.value.previewSize!.height,
+      controller.value.previewSize!.width,
+    );
+    CustomPainter painter = FaceDetectorPainter(
+      imageSize,
+      _scanResults,
+      camDirec,
+    );
+    return CustomPaint(painter: painter);
+  }
 
   //TODO toggle camera direction
   /// 전면 ↔ 후면 카메라를 전환한다.
@@ -413,14 +411,15 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       );
 
       //TODO View for displaying rectangles around detected aces
-      // stackChildren.add(
-      //   Positioned(
-      //       top: 0.0,
-      //       left: 0.0,
-      //       width: size.width,
-      //       height: size.height,
-      //       child: buildResult()),
-      // );
+      stackChildren.add(
+        Positioned(
+          top: 0.0,
+          left: 0.0,
+          width: size.width,
+          height: size.height,
+          child: buildResult(),
+        ),
+      );
     }
 
     //TODO View for displaying the bar to switch camera direction or for registering faces
@@ -463,24 +462,6 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                       },
                     ),
                   ),
-                  // 참고: Row(가로 배치) 안에서 SizedBox 의 height 는 효과가 없다.
-                  // 간격을 주려면 width 를 써야 한다.
-                  const SizedBox(height: 10),
-                  // ⚠️ 이 버튼은 등록 화면에서 복사되어 온 것으로,
-                  //    인식 화면에서는 할 일이 없어 onPressed 가 비어 있다.
-                  //    지워도 되고, "인식 일시정지" 같은 기능을 붙여도 좋다.
-                  AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 300),
-                    child: IconButton(
-                      icon: Icon(
-                        Icons.face_retouching_natural,
-                        color: Colors.white,
-                      ),
-                      iconSize: 40,
-                      color: Colors.black,
-                      onPressed: () {},
-                    ),
-                  ),
                 ],
               ),
             ),
@@ -508,7 +489,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
 /// `CustomPainter` 는 위젯 조합 대신 캔버스에 선/도형/글자를 직접 그릴 때 쓴다.
 /// 얼굴 위치가 매 프레임 달라지므로 위젯보다 이 방식이 적합하다.
 ///
-/// ⚠️ 현재 아직 사용되지 않는다 (buildResult() 가 주석 처리되어 있음).
+/// `buildResult()` 가 이 클래스를 CustomPaint 에 물려 화면에 얹는다.
 ///
 /// 참고: 등록 화면(registration_screen.dart)에도 같은 이름의 클래스가 있지만
 /// **다른 클래스**다. 저쪽은 ML Kit의 `Face` 를 받아 사각형만 그리고,
