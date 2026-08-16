@@ -26,17 +26,24 @@ import '../ml/recognition.dart';
 
 /// **얼굴 등록 화면.** 카메라로 얼굴을 찍어 이름과 함께 DB에 저장한다.
 ///
-/// ⚠️ **이 화면은 아직 미완성이며, 직접 채워 넣어야 하는 실습 과제다.**
-/// 현재 동작하는 것은 카메라 미리보기와 전/후면 전환뿐이고,
-/// 얼굴 검출·인식·등록 로직은 `//TODO` 주석과 주석 처리된 코드로만 남아 있다.
+/// **전체 흐름 (한 장의 프레임이 거치는 길)**
+/// ```
+/// 카메라 스트림 → startImageStream 콜백 (isBusy 로 프레임 솎아내기)
+///   → doFaceDetectionOnFrame()   프레임을 InputImage 로 변환
+///   → faceDetector.processImage() ML Kit이 "얼굴이 어디 있는지" 알려줌
+///   → performFaceRecognition()   변환·회전·크롭 → recognizer 로 임베딩 추출
+///   → showFaceRegistrationDialogue()  이름을 입력받아 DB에 저장
+/// ```
 ///
-/// **완성하려면 대략 이런 순서로 진행한다:**
-/// 1. 아래 "declare face detector" 자리에 `FaceDetector` 와 `Recognizer` 를 선언
-/// 2. `initState()` 에서 그 둘을 생성
-/// 3. `doFaceDetectionOnFrame()` 안을 채워 얼굴을 검출
-/// 4. 주석 처리된 `performFaceRecognition()` 을 살려 얼굴을 잘라내고 임베딩 추출
-/// 5. 주석 처리된 `showFaceRegistrationDialogue()` 를 살려 이름을 입력받고 저장
-/// 6. 하단 얼굴 아이콘 버튼의 빈 `onPressed` 에 `register = true;` 를 연결
+/// **여기서 ML Kit과 FaceNet의 역할이 다르다는 점이 핵심이다.**
+/// - ML Kit(`google_mlkit_face_detection`): "사진 어디에 얼굴이 있는가" (**위치**)
+/// - FaceNet(`ml/recognizer.dart`): "그 얼굴이 누구인가" (**정체**)
+///
+/// 이 화면은 `recognition_screen.dart` 와 구조가 거의 같지만,
+/// **사용자가 등록 버튼을 눌렀을 때만**(`register` 깃발) 얼굴을 처리한다는 점이 다르다.
+///
+/// 소스 곳곳의 `//TODO` 주석은 원래 강의용 실습 표시였고,
+/// 지금은 **이미 구현이 끝난 상태**다. 각 단계를 찾아가는 이정표로 읽으면 된다.
 class RegistrationScreen extends StatefulWidget {
   const RegistrationScreen({super.key});
 
@@ -77,30 +84,58 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   /// 현재 카메라가 전면인지 후면인지. 화면에 사각형을 좌우 반전해 그릴 때도 쓰인다.
   CameraLensDirection camDirec = CameraLensDirection.front;
 
-  /// 인식 결과 목록. (현재는 채우는 코드가 아직 없다)
+  /// 인식 결과 목록.
+  ///
+  /// 참고: 등록 화면에서는 `performFaceRecognition()` 이 시작할 때
+  /// `clear()` 만 하고 결과를 담지는 않으므로 **항상 비어 있다.**
+  /// (인식 화면에서 복사해 오면서 남은 필드다. 화면에 이름표를 그리지 않는
+  ///  등록 화면에서는 없어도 되는 값이다)
   late List<Recognition> recognitions = [];
 
   //TODO declare face detector
+  /// ML Kit 얼굴 **검출기**. 사진 속 얼굴의 위치(사각형)를 찾아준다.
+  /// 누구인지는 알려주지 않는다 — 그건 아래 [recognizer] 의 몫이다.
   late FaceDetector faceDetector;
 
   //TODO declare face recognizer
+  /// FaceNet 얼굴 **인식기**. 잘라낸 얼굴에서 512차원 임베딩을 뽑고
+  /// DB 저장/조회까지 담당한다. (`ml/recognizer.dart`)
   late Recognizer recognizer;
 
   /// 화면이 처음 만들어질 때 한 번 호출된다.
+  ///
+  /// 무거운 객체(검출기·모델·카메라)를 여기서 딱 한 번 만들어 둔다.
+  /// build() 안에서 만들면 화면을 다시 그릴 때마다 새로 만들어져 버린다.
   @override
   void initState() {
+    // 부모 클래스의 초기화를 먼저 끝내는 것이 규칙이다. 항상 맨 위에 둔다.
     super.initState();
 
     //TODO initialize face detector
+    // FaceDetectorOptions 로 검출기의 동작을 정한다.
+    // - performanceMode: fast  → 빠르지만 정확도는 조금 낮다(실시간 영상에 적합)
+    //                    accurate → 느리지만 정확하다(사진 한 장 처리에 적합)
+    // 이 밖에 자주 쓰는 옵션:
+    // - enableLandmarks: 눈·코·입 위치까지 얻기
+    // - enableContours : 얼굴 윤곽선 점들 얻기
+    // - enableClassification: 웃고 있는지 / 눈을 떴는지 확률로 얻기
+    //   (라이브니스를 눈 깜빡임으로 구현하려면 이 옵션이 필요하다)
+    // - minFaceSize    : 프레임 대비 이 비율보다 작은 얼굴은 무시
+    // 옵션을 켤수록 느려지므로 필요한 것만 켠다.
     FaceDetectorOptions options = FaceDetectorOptions(
       performanceMode: FaceDetectorMode.fast,
     );
     faceDetector = FaceDetector(options: options);
 
     //TODO initialize face recognizer
+    // ⚠️ 생성자가 TFLite 모델 로딩을 기다리지 않는다(`ml/recognizer.dart` 참고).
+    // 카메라가 준비되고 첫 프레임이 오기까지 시간이 걸려서 대체로 문제가 없지만,
+    // 엄밀히는 "운 좋게 동작하는" 코드다.
     recognizer = Recognizer();
 
     //TODO initialize camera footage
+    // 카메라 켜기. async 함수지만 initState 는 await 할 수 없으므로
+    // 호출만 해두고, 준비가 끝나면 그 안에서 setState 로 화면을 갱신한다.
     initializeCamera();
   }
 
@@ -179,30 +214,32 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   }
 
   //TODO face detection on a frame
-  /// 검출된 얼굴 목록을 담아둘 변수. (아직 채우는 코드가 없어 항상 null 이다)
+  /// 화면에 사각형을 그릴 때 쓰는 검출 결과.
+  ///
+  /// 등록 화면에서는 ML Kit의 `List<Face>` 가 그대로 들어간다.
+  /// (인식 화면에서는 같은 이름의 변수에 `List<Recognition>` 이 들어간다 —
+  ///  타입이 `dynamic` 이라 이런 차이가 컴파일 시점에 드러나지 않는다)
   dynamic _scanResults;
 
   /// 가장 최근에 카메라에서 받은 프레임 한 장.
+  ///
+  /// 스트림 콜백이 여기에 덮어쓰고, 아래 함수들이 꺼내 쓴다.
+  /// `isBusy` 덕분에 "쓰는 중에 덮어쓰이는" 일이 없다.
   CameraImage? frame;
 
-  /// 프레임 한 장에서 얼굴을 찾아내는 함수. **여기가 핵심 실습 구간이다.**
+  /// 프레임 한 장에서 얼굴을 찾아낸다. **파이프라인의 1단계다.**
   ///
-  /// 완성 예시:
-  /// ```dart
-  /// final inputImage = getInputImage();          // 1. ML Kit 입력 형식으로 변환
-  /// if (inputImage == null) {                    //    변환 실패 시 그냥 넘어간다
-  ///   setState(() => isBusy = false);
-  ///   return;
-  /// }
-  /// final faces = await faceDetector.processImage(inputImage);  // 2. 얼굴 검출
-  /// performFaceRecognition(faces);               // 3. 인식/등록 처리
-  /// ```
+  /// 이 함수는 `initializeCamera()` 의 스트림 콜백에서 프레임마다 호출된다.
   ///
   /// ⚠️ 어떤 경로로 함수가 끝나든 반드시 `isBusy = false` 가 되어야 한다.
   /// 중간에 return 하는 분기를 만들었다면 거기서도 꼭 되돌려 놓자.
+  /// 안 그러면 이후 모든 프레임이 무시되어 화면이 멈춘 것처럼 보인다.
   doFaceDetectionOnFrame() async {
     //TODO convert frame into InputImage format
+    // ① 카메라 프레임을 ML Kit이 이해하는 형식으로 변환한다.
     InputImage? inputImage = getInputImage();
+    // 변환 실패(포맷/회전 문제)면 이번 프레임은 건너뛴다.
+    // 이때 isBusy 를 내려주지 않으면 스트림이 영구히 멈추므로 꼭 필요한 코드다.
     if (inputImage == null) {
       setState(() {
         isBusy = false;
@@ -211,10 +248,18 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
     }
 
     //TODO pass InputImage to face detection model and detect faces
+    // ② ML Kit에 넘겨 얼굴을 검출한다. 네이티브(Android/iOS) 쪽에서 도는
+    //    작업이라 시간이 걸리므로 await 로 결과를 기다린다.
+    //    얼굴이 없으면 빈 리스트가 돌아온다(예외가 아니다).
     List<Face> faces = await faceDetector.processImage(inputImage);
+    // 참고: Dart에서 문자열을 이을 때는 `+` 보다 `'faces=${faces.length}'`
+    // 같은 문자열 보간이 관례다.
     print('faces=' + faces.length.toString());
 
     //TODO perform face recognition on detected faces
+    // ③ 검출된 얼굴들을 잘라내어 임베딩 추출/등록 단계로 넘긴다.
+    //    (await 를 붙이지 않아 이 함수는 여기서 바로 끝난다.
+    //     대신 isBusy 정리를 performFaceRecognition() 이 맡는다)
     performFaceRecognition(faces);
 
     // isBusy 를 내리고 _scanResults 에 결과를 담는 일은
@@ -231,10 +276,6 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // 아래 두 개의 주석 처리된 함수가 "3단계 실습"의 정답에 가까운 코드다.
-  // 주석을 풀고 필요한 import(`../util.dart`, `../ml/recognizer.dart`,
-  // `package:image/image.dart` 등)를 다시 추가하면 동작한다.
-  //
   // performFaceRecognition() 이 하는 일:
   //   ① 카메라 프레임을 img.Image 로 변환 (OS별로 다른 함수 사용)
   //   ② 세로 방향이 되도록 회전 (전면 270도 / 후면 90도)
@@ -243,26 +284,61 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   //   ⑤ 이름 입력 다이얼로그 띄우기
   // ─────────────────────────────────────────────────────────────
 
+  /// 이번 프레임을 이미지로 변환·회전한 결과. 여기서 얼굴을 잘라낸다.
   img.Image? image;
+
+  /// **등록 예약 깃발.**
+  ///
+  /// 하단 얼굴 버튼을 누르면 `true` 가 되고, 다음 프레임이 들어왔을 때
+  /// 아래 `if (register)` 블록이 한 번 실행된 뒤 다시 `false` 로 돌아간다.
+  ///
+  /// 버튼을 누른 그 순간 바로 처리하지 않는 이유는, 버튼 콜백에는
+  /// "지금 이 순간의 프레임"이 없기 때문이다. 카메라 스트림이 다음 장을
+  /// 가져다줄 때까지 기다렸다가 그 프레임으로 등록한다.
   bool register = false;
 
   //TODO perform Face Recognition
+  /// 검출된 얼굴들을 잘라내고, 등록이 예약돼 있으면 임베딩까지 뽑는다.
+  /// **파이프라인의 2단계다.**
   performFaceRecognition(List<Face> faces) async {
+    // 지난 프레임의 결과를 비운다.
+    // (등록 화면에서는 이 목록을 채우지 않으므로 사실상 하는 일이 없다)
     recognitions.clear();
 
     //TODO convert CameraImage to Image and rotate it so that our frame will be in a portrait
+    // ① 카메라 프레임(CameraImage)을 픽셀을 다룰 수 있는 img.Image 로 바꾼다.
+    //    OS마다 프레임 포맷이 달라서 변환 함수도 다르다(`util.dart` 참고).
+    //      - iOS    : BGRA8888
+    //      - Android: NV21
     image = Platform.isIOS
         ? Util.convertBGRA8888ToImage(frame!)
         : Util.convertNV21(frame!);
+    // ② 세로(초상) 방향으로 회전시킨다.
+    //    카메라 센서는 가로로 누워 있어서, 변환 직후 이미지는 90도 돌아가 있다.
+    //    이 보정을 빼먹으면 얼굴이 옆으로 누운 채로 모델에 들어가 인식률이 급락한다.
+    //    전면은 270도, 후면은 90도인 이유는 두 센서의 장착 방향이 반대이기 때문이다.
     image = img.copyRotate(
       image!,
       angle: camDirec == CameraLensDirection.front ? 270 : 90,
     );
 
+    // 등록 버튼을 누른 직후의 프레임에서만 아래 블록이 실행된다.
+    // 평소에는 건너뛰므로, 등록 화면은 얼굴 위치만 계속 그린다.
     if (register) {
+      // 화면에 얼굴이 여럿이면 사람 수만큼 반복된다.
+      // ⚠️ 그 경우 등록 다이얼로그도 얼굴 수만큼 겹쳐 뜬다.
+      //    한 명만 등록하고 싶다면 `faces.isNotEmpty` 일 때 첫 얼굴만 쓰거나,
+      //    얼굴이 2개 이상이면 안내 문구를 띄우는 편이 좋다.
       for (Face face in faces) {
+        // ML Kit이 알려준 얼굴 사각형. 원본 이미지 좌표 기준이다.
         Rect faceRect = face.boundingBox;
+
         //TODO crop face
+        // ③ 얼굴 부분만 잘라낸다. double 좌표를 toInt() 로 정수로 바꿔 넘긴다.
+        //
+        // ⚠️ 얼굴이 화면 가장자리에 걸치면 boundingBox 가 이미지 밖으로
+        //    삐져나가 크롭에서 예외가 날 수 있다. 실제 앱에서는
+        //    `clamp()` 로 좌표를 이미지 범위 안에 가두는 방어 코드를 넣는 게 좋다.
         img.Image croppedFace = img.copyCrop(
           image!,
           x: faceRect.left.toInt(),
@@ -272,18 +348,31 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
         );
 
         //TODO pass cropped face to face recognition model
+        // ④ 잘라낸 얼굴을 FaceNet에 넣어 임베딩(숫자 512개)을 뽑는다.
+        //    내부에서 160x160 리사이즈와 정규화까지 알아서 처리한다.
+        //
+        // 참고: recognize() 는 Future 가 아니라 Recognition 을 바로 반환한다.
+        //      여기 붙은 await 는 없어도 되지만, 있어도 문제는 없다.
+        //      (반환된 recognition.name/distance 는 "이미 등록된 사람인지"를
+        //       알려준다. 중복 등록을 막고 싶다면 이 값으로 걸러낼 수 있다)
         Recognition recognition = await recognizer.recognize(
           croppedFace,
           faceRect,
         );
 
         //TODO show face registration dialogue
+        // ⑤ 이름을 입력받아 저장하는 창을 띄운다.
+        //    await 하지 않으므로 창이 뜬 채로 반복문은 계속 진행된다.
         showFaceRegistrationDialogue(croppedFace, recognition);
       }
 
+      // 한 번 처리했으니 예약을 해제한다.
+      // 이걸 빼먹으면 프레임마다 다이얼로그가 무한히 쌓인다.
       register = false;
     }
 
+    // 이번 프레임 처리 완료. isBusy 를 내려 다음 프레임을 받을 준비를 하고,
+    // 검출 결과를 화면(사각형)에 반영한다.
     setState(() {
       isBusy = false;
       _scanResults = faces;
@@ -291,27 +380,53 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   }
 
   //TODO Face Registration Dialogue
+  /// 이름 입력칸의 글자를 읽어오기 위한 컨트롤러.
+  ///
+  /// `TextField` 에 사용자가 친 글자는 이 객체의 `.text` 로 꺼낸다.
+  ///
+  /// ⚠️ 원칙적으로는 `dispose()` 에서 `textEditingController.dispose()` 를
+  ///    호출해 정리해야 한다. 지금은 빠져 있다.
+  /// ⚠️ 화면 전체가 하나의 컨트롤러를 공유하므로, 연속으로 등록하면
+  ///    이전에 입력한 이름이 그대로 남아 있다. 저장 후 `.clear()` 를
+  ///    불러주면 깔끔하다.
   TextEditingController textEditingController = TextEditingController();
 
+  /// 잘라낸 얼굴 사진을 보여주고 이름을 입력받아 DB에 저장하는 다이얼로그.
+  ///
+  /// [croppedFace] 미리보기로 보여줄(그리고 DB에 함께 저장할) 얼굴 이미지
+  /// [recognition] 방금 추출한 임베딩이 들어 있는 인식 결과
   showFaceRegistrationDialogue(img.Image croppedFace, Recognition recognition) {
+    // showDialog: 화면 위에 떠 있는 창을 띄운다.
+    // builder 가 창의 내용을 만들어 준다. (여기서 받은 `ctx` 는 아래에서
+    // 쓰이지 않고, 대신 State 의 `context` 를 쓰고 있다 — 지금 구조에서는
+    // 문제없이 동작하지만 보통은 `ctx` 를 쓰는 편이 안전하다)
     showDialog(
       context: context,
       builder: (ctx) => Dialog(
+        // 배경을 투명으로 두어야 아래 BackdropFilter 의 유리 효과가 살아난다.
         backgroundColor: Colors.transparent,
+        // insetPadding: 창과 화면 가장자리 사이의 여백. 창의 최대 크기를 정한다.
         insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 60),
+        // ClipRRect 로 모서리를 둥글게 잘라야 흐림 효과가 사각형 밖으로 새지 않는다.
         child: ClipRRect(
           borderRadius: BorderRadius.circular(20),
           child: BackdropFilter(
+            // 창 뒤에 비치는 카메라 화면을 뿌옇게 흐린다.
             filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
             child: Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
+                // withAlpha(30): 거의 투명한 흰색을 얹어 유리 느낌을 낸다(0~255).
                 color: Colors.white.withAlpha(30),
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(color: Colors.white.withAlpha(40)),
               ),
+              // SingleChildScrollView: 키보드가 올라와 공간이 좁아졌을 때
+              // 내용이 넘쳐 깨지지 않도록 스크롤할 수 있게 감싼다.
               child: SingleChildScrollView(
                 child: Column(
+                  // 세로로 꽉 채우지 말고 내용만큼만 차지하라는 뜻.
+                  // 다이얼로그에서는 거의 항상 필요하다.
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const Text(
@@ -324,17 +439,27 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
                       ),
                     ),
                     const SizedBox(height: 20),
+                    // ── 잘라낸 얼굴 미리보기 (원형) ──
+                    // borderRadius 를 크게 주면 정사각형이 원처럼 잘린다.
                     ClipRRect(
                       borderRadius: BorderRadius.circular(100),
+                      // img.Image 는 Flutter 위젯이 바로 그릴 수 없으므로
+                      // encodeBmp() 로 이미지 파일 형식의 바이트로 바꾼 뒤
+                      // Image.memory() 로 그린다.
+                      // (BMP는 압축이 없어 인코딩이 빠르다. 화면에 잠깐 보여줄
+                      //  용도라 용량은 문제되지 않는다)
                       child: Image.memory(
                         Uint8List.fromList(img.encodeBmp(croppedFace)),
                         width: 150,
                         height: 150,
+                        // BoxFit.cover: 비율을 유지한 채 영역을 꽉 채운다(넘치면 잘림).
                         fit: BoxFit.cover,
                       ),
                     ),
                     const SizedBox(height: 20),
+                    // ── 이름 입력칸 ──
                     TextField(
+                      // 위에서 만든 컨트롤러를 연결해야 `.text` 로 값을 읽을 수 있다.
                       controller: textEditingController,
                       style: const TextStyle(color: Colors.white),
                       decoration: InputDecoration(
@@ -349,17 +474,35 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
                       ),
                     ),
                     const SizedBox(height: 20),
+                    // ── 저장 버튼 ──
+                    // SizedBox(width: double.infinity) 로 감싸면 버튼이 가로로 꽉 찬다.
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
                         onPressed: () {
+                          // 이름 + 임베딩 + 얼굴 사진을 DB에 저장한다.
+                          //
+                          // ⚠️ registerFaceInDB 는 `void ... async` 라 await 할 수 없다.
+                          //    즉 저장이 끝나기 전에 아래 화면 닫기가 먼저 실행된다.
+                          //    (실제로는 금방 끝나서 문제가 드러나지 않는다)
+                          // ⚠️ 이름이 비어 있어도 그대로 저장된다.
+                          //    `.trim().isEmpty` 검사를 넣어 막는 것이 좋다.
+                          // ⚠️ 저장 후 recognizer.registered 캐시를 갱신하지 않으므로,
+                          //    방금 등록한 얼굴은 앱을 다시 켜야 인식된다.
+                          //    (`ml/recognizer.dart` 의 registerFaceInDB 설명 참고)
                           recognizer.registerFaceInDB(
                             textEditingController.text.trim(),
                             recognition.embeddings,
+                            // croppedFace 는 null 이 될 수 없으므로 `!` 는 불필요하다.
                             Uint8List.fromList(img.encodeBmp(croppedFace!)),
                           );
+                          // pop 이 두 번인 이유:
+                          //   1번째 → 이 다이얼로그를 닫는다
+                          //   2번째 → 등록 화면 자체를 닫고 홈으로 돌아간다
+                          // (등록 후 카메라 화면에 계속 머물고 싶다면 두 번째 pop 을 지운다)
                           Navigator.pop(context);
                           Navigator.pop(context); // Close dialog
+                          // 화면 아래에 잠깐 떴다 사라지는 알림 띠를 보여준다.
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text("Face Registered")),
                           );
@@ -461,25 +604,31 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   }
 
   // TODO Show rectangles around detected faces
-  // 아래 buildResult() 의 주석을 풀면 검출된 얼굴 위에 사각형이 그려진다.
-  // build() 안의 "View for displaying rectangles" 부분 주석도 함께 풀어야 한다.
-  // 주의: 여기서 넘기는 imageSize 는 width/height 를 **바꿔서** 전달한다.
-  //       카메라 프레임이 가로로 누워 들어오기 때문이다.
+  /// 검출된 얼굴 위에 사각형을 그리는 레이어를 만든다.
+  ///
+  /// build() 의 Stack 에서 카메라 프리뷰 위에 얹어 사용한다.
   Widget buildResult() {
+    // 아직 검출 결과가 없거나 카메라가 준비되지 않았으면 안내 문구만 보여준다.
+    // (카메라 프리뷰 위에 겹쳐 있어서 실제로는 이 글자가 프리뷰 위에 떠 보인다)
     if (_scanResults == null ||
         controller == null ||
         !controller.value.isInitialized) {
       return const Center(child: Text('Camera is not initialized'));
     }
+    // ⚠️ previewSize 의 height 를 width 자리에, width 를 height 자리에
+    //    **바꿔서** 넣는다. 카메라 프레임이 가로로 누운 상태로 오기 때문이다.
+    //    사각형 위치가 어긋난다면 여기를 가장 먼저 의심하자.
     final Size imageSize = Size(
       controller.value.previewSize!.height,
       controller.value.previewSize!.width,
     );
+    // 아래에 정의된 CustomPainter 에 그릴 재료를 넘긴다.
     CustomPainter painter = FaceDetectorPainter(
       imageSize,
       _scanResults,
       camDirec,
     );
+    // CustomPaint: painter 가 그린 그림을 화면에 얹는 위젯.
     return CustomPaint(painter: painter);
   }
 
@@ -640,8 +789,6 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
 /// `CustomPainter` 는 위젯을 조합하는 대신 캔버스에 선/도형/글자를 **직접 그릴 때**
 /// 사용한다. 얼굴 위치가 매 프레임 달라지므로 위젯보다 이 방식이 적합하다.
 ///
-/// ⚠️ 현재 이 화면에서는 아직 사용되지 않는다 (buildResult() 가 주석 처리됨).
-///
 /// 참고: 이름은 같지만 인식 화면(recognition_screen.dart)의 FaceDetectorPainter 와는
 /// **다른 클래스**다. 이쪽은 ML Kit의 `Face` 를 받아 사각형만 그리고,
 /// 저쪽은 `Recognition` 을 받아 이름표까지 그린다.
@@ -673,7 +820,9 @@ class FaceDetectorPainter extends CustomPainter {
       ..strokeWidth = 2.5
       ..color = Colors.deepPurple.shade300;
 
-    // 이름표 배경용 붓. (이 화면에서는 이름표를 그리지 않아 아직 쓰이지 않는다)
+    // 이름표 배경용 붓.
+    // ⚠️ 등록 화면은 사각형만 그리고 이름표는 그리지 않으므로 실제로 쓰이지 않는다.
+    //    (인식 화면의 같은 이름 클래스에서는 이 붓으로 이름표 배경을 칠한다)
     final Paint labelBgPaint = Paint()
       ..style = PaintingStyle.fill
       ..color = Colors.deepPurple.shade300.withAlpha(150);

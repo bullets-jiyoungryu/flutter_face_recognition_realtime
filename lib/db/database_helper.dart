@@ -1,8 +1,10 @@
 // path 패키지: 경로 문자열을 안전하게 이어붙이는 join() 함수를 제공한다.
 // (플랫폼별 구분자 차이를 알아서 처리해 준다)
 import 'package:path/path.dart';
+
 // sqflite 패키지: 기기 내부에 SQLite 데이터베이스를 만들고 다루는 기능.
 import 'package:sqflite/sqflite.dart';
+
 // path_provider 패키지: "앱 문서 폴더는 어디인가?" 같은 플랫폼별 경로를 알려준다.
 // 이름이 비슷하지만 위의 path 패키지와는 완전히 다른 패키지다.
 import 'package:path_provider/path_provider.dart';
@@ -43,6 +45,13 @@ class DatabaseHelper {
 
   /// 얼굴 특징 벡터. 실수 배열을 **콤마로 이어붙인 문자열(TEXT)** 로 저장한다.
   /// 예: "0.12,-0.98,0.44,..." (512개)
+  ///
+  /// 숫자를 글자로 바꿔 넣는 방식이라 용량도 크고 읽을 때마다
+  /// `double.parse` 를 512번 해야 해서 효율적이지는 않다.
+  /// 대신 DB를 직접 열어봤을 때 눈으로 값을 확인할 수 있어 배우기에는 좋다.
+  /// (실전에서는 Float32List 를 BLOB 으로 저장하는 편이 빠르다)
+  /// 문자열로 만드는 곳은 `Recognizer.registerFaceInDB()`,
+  /// 되돌리는 곳은 `Recognizer.loadRegisteredFaces()` 다.
   static const columnEmbedding = 'embedding';
 
   /// 등록 당시 잘라낸 얼굴 사진. JPEG 바이트를 BLOB 으로 저장한다.
@@ -77,6 +86,12 @@ class DatabaseHelper {
   ///
   /// `'''...'''` 는 여러 줄 문자열이고, `$table` 처럼 `$` 를 붙이면
   /// 위에서 선언한 상수 값이 문자열 안에 끼워 넣어진다(문자열 보간).
+  ///
+  /// 컬럼 설명:
+  /// - `INTEGER PRIMARY KEY AUTOINCREMENT` — 값을 넣지 않아도 1, 2, 3... 자동 부여
+  /// - `NOT NULL` — 비워 둘 수 없다. 그래서 이미지 없이 insert 하면 실패한다.
+  ///
+  /// (반환 타입이 그냥 `Future` 인데 `Future<void>` 로 적는 편이 명확하다)
   Future _onCreate(Database db, int version) async {
     await db.execute('''
       CREATE TABLE $table (
@@ -99,6 +114,14 @@ class DatabaseHelper {
   }
 
   /// 테이블의 모든 행을 읽어온다. (등록된 얼굴 전체 목록)
+  ///
+  /// 반환된 각 Map 은 `{'id': 1, 'name': '홍길동', 'embedding': '0.1,...',
+  /// 'image': [바이트들]}` 형태다. image 는 BLOB 이라 `Uint8List` 로 넘어온다.
+  ///
+  /// ⚠️ sqflite 가 돌려주는 Map 은 **읽기 전용**이라 값을 바꾸려 하면 예외가 난다.
+  ///    수정이 필요하면 `Map.of(row)` 로 복사한 뒤 고쳐야 한다.
+  /// ⚠️ 등록 인원이 많아지면 얼굴 사진까지 전부 메모리에 올라온다.
+  ///    이름만 필요할 때는 `columns: [columnId, columnName]` 로 제한하면 가볍다.
   Future<List<Map<String, dynamic>>> queryAllRows() async {
     if (_db == null) throw Exception('Database not initialized');
     return await _db!.query(table);

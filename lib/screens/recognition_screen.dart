@@ -23,20 +23,30 @@ import '../ml/recognition.dart';
 
 /// **실시간 얼굴 인식 화면.** 카메라에 잡힌 얼굴이 등록된 누구인지 찾아 표시한다.
 ///
-/// ⚠️ **이 화면도 아직 미완성이며 직접 채워 넣어야 한다.**
 /// 등록 화면(`registration_screen.dart`)과 구조가 거의 같지만 목적이 다르다.
 ///
 /// | | 등록 화면 | 이 화면(인식) |
 /// |---|---|---|
 /// | 목적 | 얼굴을 **DB에 저장** | 저장된 얼굴과 **비교해 이름 표시** |
-/// | 버튼 | 등록 버튼을 눌렀을 때만 처리 | 매 프레임 자동 처리 |
+/// | 처리 시점 | 등록 버튼을 눌렀을 때만 | **매 프레임 자동으로** |
 /// | 화면 표시 | 이름 입력 다이얼로그 | 얼굴 위 사각형 + 이름표 |
+/// | 라이브니스 | 검사 안 함 | **사진 스푸핑 검사함** |
 ///
-/// **완성하려면:**
-/// 1. `FaceDetector` 와 `Recognizer` 를 선언하고 `initState()` 에서 생성
-/// 2. `doFaceDetectionOnFrame()` 에서 얼굴 검출
-/// 3. 검출된 얼굴마다 잘라내어 `recognizer.recognize()` 호출 → `recognitions` 에 저장
-/// 4. `buildResult()` 주석을 풀어 결과를 화면에 그리기
+/// **전체 흐름 (한 장의 프레임이 거치는 길)**
+/// ```
+/// 카메라 스트림 → startImageStream 콜백 (isBusy 로 프레임 솎아내기)
+///   → doFaceDetectionOnFrame()   프레임을 InputImage 로 변환
+///   → faceDetector.processImage() ML Kit이 "얼굴이 어디 있는지" 알려줌
+///   → performFaceRecognition()   변환·회전·크롭
+///        ├ livenessDetector.isLive()  진짜 얼굴인가? (사진이면 Spoof)
+///        └ recognizer.recognize()     누구인가? (유사도가 낮으면 Unknown)
+///   → buildResult() / FaceDetectorPainter 로 화면에 사각형과 이름표를 그림
+/// ```
+///
+/// 세 개의 모델이 각자 다른 질문에 답한다는 점이 이 화면의 핵심이다.
+/// - ML Kit: **어디에** 얼굴이 있는가
+/// - 라이브니스 모델: 그게 **진짜** 얼굴인가
+/// - FaceNet: 그 얼굴이 **누구**인가
 class RecognitionScreen extends StatefulWidget {
   const RecognitionScreen({super.key});
 
@@ -70,34 +80,49 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   ///
   /// 이 화면의 핵심 데이터다. 얼굴마다 이름과 위치, 유사도가 들어간다.
   /// `FaceDetectorPainter` 가 이 목록을 받아 화면에 사각형과 이름표를 그린다.
-  /// (아직 채우는 코드가 없어 지금은 항상 비어 있다)
+  /// 프레임마다 비우고 다시 채운다.
   late List<Recognition> recognitions = [];
 
   //TODO declare face detector
+  /// ML Kit 얼굴 **검출기**. 사진 속 얼굴의 위치(사각형)를 찾아준다.
   late FaceDetector faceDetector;
 
   //TODO declare face recognizer
+  /// FaceNet 얼굴 **인식기**. 잘라낸 얼굴이 등록된 누구인지 판별한다.
   late Recognizer recognizer;
 
+  /// 라이브니스(생체) 검사기. 사진/화면으로 위장한 얼굴을 걸러낸다.
+  /// (`ml/liveness_detector.dart`)
   late LivenessDetector livenessDetector;
 
   /// 화면이 처음 만들어질 때 한 번 호출된다.
+  ///
+  /// TFLite 모델 두 개(FaceNet 23MB + 라이브니스)를 여기서 함께 올린다.
+  /// 그만큼 이 화면은 등록 화면보다 메모리를 더 쓴다.
   @override
   void initState() {
+    // 부모 클래스의 초기화를 먼저 끝내는 것이 규칙이다. 항상 맨 위에 둔다.
     super.initState();
 
     //TODO initialize face detector
+    // performanceMode.fast: 실시간 영상이므로 정확도보다 속도를 택했다.
+    // (accurate 로 바꾸면 더 정확하지만 프레임이 눈에 띄게 느려진다)
     FaceDetectorOptions options = FaceDetectorOptions(
       performanceMode: FaceDetectorMode.fast,
     );
     faceDetector = FaceDetector(options: options);
 
     //TODO initialize face recognizer
+    // ⚠️ 두 생성자 모두 모델 로딩을 기다리지 않는다.
+    //    카메라 준비 시간 덕분에 대체로 문제가 없지만, 보장된 동작은 아니다.
+    //    (각 클래스의 주석 참고)
     recognizer = Recognizer();
 
     livenessDetector = LivenessDetector();
 
     //TODO initialize camera footage
+    // 카메라 켜기. async 함수지만 initState 는 await 할 수 없으므로
+    // 호출만 해두고, 준비가 끝나면 그 안에서 setState 로 화면을 갱신한다.
     initializeCamera();
   }
 
@@ -149,12 +174,19 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   }
 
   //TODO close all resources
-  /// 화면이 사라질 때 카메라를 끈다.
+  /// 화면이 사라질 때 열어둔 자원을 모두 정리한다.
   ///
-  /// 💡 faceDetector 와 recognizer 를 추가했다면 여기서 함께 정리해야 한다.
-  ///    예) faceDetector.close(); recognizer.close();
+  /// 카메라·ML Kit 검출기·TFLite 인터프리터는 모두 **네이티브 자원**을 잡고 있어
+  /// Dart의 가비지 컬렉터가 알아서 치워주지 않는다. 직접 닫지 않으면
+  /// 화면을 드나들 때마다 쌓여 메모리가 계속 늘어난다.
+  ///
+  /// ⚠️ **`livenessDetector.close()` 가 빠져 있다.**
+  ///    이 화면을 여러 번 드나들면 라이브니스 모델이 계속 쌓인다.
+  ///    `recognizer.close();` 아래에 `livenessDetector.close();` 를 추가해야 한다.
   @override
   void dispose() {
+    // `?.` 는 controller 가 null 이면 아무것도 하지 않고 넘어가라는 뜻이다.
+    // (카메라 준비가 끝나기 전에 화면을 나가면 null 일 수 있다)
     controller?.dispose();
     faceDetector.close();
     recognizer.close();
@@ -163,29 +195,31 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   }
 
   //TODO face detection on a frame
-  /// 검출된 얼굴 목록. (아직 채우는 코드가 없어 항상 null 이다)
+  /// 화면에 그릴 인식 결과. `recognitions` 와 같은 목록이 들어간다.
+  ///
+  /// 타입이 `dynamic` 이라 `List<Recognition>` 임이 코드에 드러나지 않는다.
+  /// `buildResult()` 가 이 값을 그대로 `FaceDetectorPainter` 에 넘기는데,
+  /// 만약 다른 타입을 넣어도 컴파일은 통과하고 실행 중에야 터진다.
   dynamic _scanResults;
 
   /// 가장 최근에 받은 카메라 프레임 한 장.
+  ///
+  /// 스트림 콜백이 여기에 덮어쓰고, 아래 함수들이 꺼내 쓴다.
+  /// `isBusy` 덕분에 "쓰는 중에 덮어쓰이는" 일이 없다.
   CameraImage? frame;
 
-  /// 프레임 한 장에서 얼굴을 찾고 누구인지 알아낸다. **핵심 실습 구간이다.**
+  /// 프레임 한 장에서 얼굴을 찾는다. **파이프라인의 1단계다.**
   ///
-  /// 완성 예시:
-  /// ```dart
-  /// final inputImage = getInputImage();
-  /// if (inputImage == null) {
-  ///   setState(() => isBusy = false);
-  ///   return;
-  /// }
-  /// final faces = await faceDetector.processImage(inputImage);
-  /// performFaceRecognition(faces);
-  /// ```
+  /// `initializeCamera()` 의 스트림 콜백에서 프레임마다 호출된다.
   ///
   /// ⚠️ 어떤 경로로 끝나든 반드시 `isBusy = false` 가 되어야 한다.
+  /// 안 그러면 이후 모든 프레임이 무시되어 화면이 멈춘 것처럼 보인다.
   doFaceDetectionOnFrame() async {
     //TODO convert frame into InputImage format
+    // ① 카메라 프레임을 ML Kit이 이해하는 형식으로 변환한다.
     InputImage? inputImage = getInputImage();
+    // 변환 실패(포맷/회전 문제)면 이번 프레임은 건너뛴다.
+    // 이때 isBusy 를 내려주지 않으면 스트림이 영구히 멈춘다.
     if (inputImage == null) {
       setState(() {
         isBusy = false;
@@ -194,10 +228,16 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     }
 
     //TODO pass InputImage to face detection model and detect faces
+    // ② ML Kit에 넘겨 얼굴을 검출한다. 네이티브 쪽에서 도는 작업이라
+    //    시간이 걸리므로 await 로 기다린다. 얼굴이 없으면 빈 리스트가 온다.
     List<Face> faces = await faceDetector.processImage(inputImage);
+    // 참고: Dart에서는 `+` 보다 `'faces=${faces.length}'` 문자열 보간이 관례다.
     print('faces=' + faces.length.toString());
 
     //TODO perform face recognition on detected faces
+    // ③ 검출된 얼굴들을 실제로 인식하는 단계로 넘긴다.
+    //    (await 를 붙이지 않아 이 함수는 여기서 바로 끝난다.
+    //     isBusy 정리는 performFaceRecognition() 이 맡는다)
     performFaceRecognition(faces);
 
     // isBusy 를 내리고 _scanResults 에 결과를 담는 일은
@@ -214,39 +254,56 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // 아래 주석 처리된 performFaceRecognition() 이 실습의 정답에 가까운 코드다.
-  // 주석을 풀고 필요한 import(`../util.dart`, `../ml/recognizer.dart`,
-  // `package:image/image.dart` 등)를 다시 추가하면 된다.
-  //
+  // performFaceRecognition() 이 하는 일:
   //   ① 카메라 프레임을 img.Image 로 변환 (OS별로 다른 함수)
   //   ② 세로 방향이 되도록 회전 (전면 270도 / 후면 90도)
   //   ③ 얼굴 사각형대로 잘라내기(crop)
-  //   ④ recognizer.recognize() 로 누구인지 판별
-  //   ⑤ 결과를 recognitions 에 담아 화면에 그리기
-  //
-  // 참고: 아래 코드는 등록 화면에서 복사해 온 것이라 `register` 깃발과
-  //       등록 다이얼로그가 섞여 있다. 인식 화면에서는 그 부분이 필요 없으니
-  //       ①~④ 만 남기고 결과를 recognitions 에 넣도록 고쳐 쓰면 된다.
+  //   ④ 라이브니스 검사 — 진짜 얼굴인가, 사진인가
+  //   ⑤ recognizer.recognize() 로 누구인지 판별
+  //   ⑥ 임계값으로 걸러 이름을 확정하고 recognitions 에 담기
   // ─────────────────────────────────────────────────────────────
 
+  /// 이번 프레임을 이미지로 변환·회전한 결과. 여기서 얼굴을 잘라낸다.
   img.Image? image;
 
   //TODO perform Face Recognition
+  /// 검출된 얼굴들을 잘라내어 진짜인지·누구인지 판별한다.
+  /// **파이프라인의 2단계이자 이 화면의 심장이다.**
   performFaceRecognition(List<Face> faces) async {
+    // 지난 프레임의 결과를 비운다. 안 비우면 결과가 계속 쌓여
+    // 사라진 얼굴의 이름표까지 화면에 남는다.
     recognitions.clear();
 
     //TODO convert CameraImage to Image and rotate it so that our frame will be in a portrait
+    // ① 카메라 프레임(CameraImage)을 픽셀을 다룰 수 있는 img.Image 로 바꾼다.
+    //    OS마다 프레임 포맷이 달라 변환 함수도 다르다(`util.dart` 참고).
+    //      - iOS    : BGRA8888
+    //      - Android: NV21
     image = Platform.isIOS
         ? Util.convertBGRA8888ToImage(frame!)
         : Util.convertNV21(frame!);
+    // ② 세로(초상) 방향으로 회전시킨다.
+    //    카메라 센서는 가로로 누워 있어 변환 직후 이미지는 90도 돌아가 있다.
+    //    이 보정을 빼먹으면 얼굴이 옆으로 누운 채 모델에 들어가 인식률이 급락한다.
+    //    전면 270도 / 후면 90도인 이유는 두 센서의 장착 방향이 반대이기 때문이다.
     image = img.copyRotate(
       image!,
       angle: camDirec == CameraLensDirection.front ? 270 : 90,
     );
 
+    // 화면에 잡힌 얼굴 수만큼 반복한다. 여러 명이 동시에 인식된다.
+    // ⚠️ 얼굴 하나당 TFLite 추론이 2회(라이브니스 + FaceNet) 돌아간다.
+    //    사람이 많으면 그만큼 느려지고 프레임이 뚝뚝 끊긴다.
     for (Face face in faces) {
+      // ML Kit이 알려준 얼굴 사각형. 원본 이미지 좌표 기준이다.
       Rect faceRect = face.boundingBox;
+
       //TODO crop face
+      // ③ 얼굴 부분만 잘라낸다. double 좌표를 toInt() 로 정수화해 넘긴다.
+      //
+      // ⚠️ 얼굴이 화면 가장자리에 걸치면 boundingBox 가 이미지 밖으로
+      //    삐져나가 예외가 날 수 있다. 실제 앱에서는 clamp() 로 좌표를
+      //    이미지 범위 안에 가두는 방어 코드를 넣는 게 좋다.
       img.Image croppedFace = img.copyCrop(
         image!,
         x: faceRect.left.toInt(),
@@ -255,24 +312,58 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
         height: faceRect.height.toInt(),
       );
 
+      // ④ 라이브니스 검사.
+      //    라이브니스 모델은 224x224 를 요구하므로 먼저 크기를 맞춘다.
+      //    (FaceNet은 160x160 을 요구하지만 그건 recognize() 안에서 알아서 한다.
+      //     두 모델의 입력 크기가 다르므로 croppedFace 를 재사용하지 않고
+      //     별도로 face224 를 만드는 것이다)
       img.Image face224 = img.copyResize(croppedFace, width: 224, height: 224);
+      // true = 진짜 얼굴, false = 사진 등 위장으로 판단됨.
       bool isLive = await livenessDetector.isLive(face224);
 
       //TODO pass cropped face to face recognition model
+      // ⑤ 잘라낸 얼굴을 FaceNet에 넣어 등록된 사람 중 가장 닮은 사람을 찾는다.
+      //    반환된 recognition 에는 이름·위치·임베딩·유사도가 들어 있다.
+      //
+      // 참고: recognize() 는 Future 가 아니라 Recognition 을 바로 반환한다.
+      //      여기 붙은 await 는 없어도 되지만, 있어도 문제는 없다.
       Recognition recognition = await recognizer.recognize(
         croppedFace,
         faceRect,
       );
 
+      // ⑥ 최종 이름 결정. **순서가 중요하다.**
+      //    스푸핑 판정이 먼저다 — 사진 속 인물이 등록된 사람이더라도
+      //    'Spoof' 로 덮어써서 통과시키지 않는다.
       if (isLive == false) {
         recognition.name = 'Spoof';
-      } else if (recognition.distance < 0.3) {
+      }
+      // 진짜 얼굴이라면 유사도로 한 번 더 거른다.
+      //
+      // findNearest() 는 등록된 얼굴 중 "가장 덜 다른" 사람을 무조건 돌려주므로,
+      // 이 검사가 없으면 전혀 모르는 사람도 등록자 이름으로 표시된다.
+      //
+      // 0.3 은 **코사인 유사도** 기준값이다(클수록 닮음, 최대 1.0).
+      // 이 값은 절대적인 정답이 아니라 직접 실험해 정해야 하는 값이다.
+      //   - 올리면(예: 0.5): 깐깐해져 본인도 Unknown 이 되는 일이 늘어난다
+      //   - 내리면(예: 0.2): 관대해져 남을 본인으로 착각하는 일이 늘어난다
+      // 보안이 중요하다면 높게 잡는 편이 안전하다.
+      else if (recognition.distance < 0.3) {
         recognition.name = 'Unknown';
       }
 
+      // 화면에 그릴 목록에 추가한다.
       recognitions.add(recognition);
     }
 
+    // 이번 프레임 처리 완료.
+    // isBusy 를 내려 다음 프레임을 받고, 결과를 화면에 반영한다.
+    // 이 setState 가 호출되어야 비로소 사각형과 이름표가 갱신된다.
+    //
+    // 참고: _scanResults 에는 recognitions 의 **복사본이 아니라 그 자체**가 들어간다.
+    // 즉 다음 프레임에서 recognitions.clear() 를 하면 _scanResults 도 함께 비워진다.
+    // 지금 구조에서는 문제가 없지만, 결과를 따로 보관하려면
+    // `List.of(recognitions)` 처럼 복사해서 넣어야 한다.
     setState(() {
       isBusy = false;
       _scanResults = recognitions;

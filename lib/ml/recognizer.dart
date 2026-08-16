@@ -1,13 +1,17 @@
 // sqrt() (제곱근) 함수를 쓰기 위해 필요하다. 코사인 유사도 계산에 사용된다.
 import 'dart:math';
+
 // Uint8List(바이트 배열), Float32List(32비트 실수 배열) 같은 고정 타입 배열.
 import 'dart:typed_data';
+
 // Rect(사각형) 타입.
 import 'dart:ui';
+
 // image 패키지: 이미지 리사이즈/자르기/인코딩 등 순수 Dart 이미지 처리.
 // `as img` 는 "이 패키지의 것들은 img. 을 붙여서 쓰겠다"는 별칭 지정이다.
 // (Flutter 기본 Image 위젯과 이름이 겹치는 것을 피하기 위함)
 import 'package:image/image.dart' as img;
+
 // tflite_flutter 패키지: TensorFlow Lite 모델을 기기에서 직접 실행한다.
 import 'package:tflite_flutter/tflite_flutter.dart';
 import '../db/database_helper.dart';
@@ -62,6 +66,8 @@ class Recognizer {
   ///
   /// ⚠️ 이름이 키이므로 같은 이름으로 두 번 등록하면 DB에는 행이 2개 생기지만
   /// 이 캐시에는 (아래 putIfAbsent 때문에) 먼저 넣은 것 하나만 남는다.
+  ///
+  /// (`Map()` 대신 요즘 Dart 스타일인 `{}` 로 써도 완전히 같다)
   Map<String, Recognition> registered = Map();
 
   /// 사용할 모델 파일 경로. pubspec.yaml 의 assets 에 등록되어 있어야 한다.
@@ -85,12 +91,22 @@ class Recognizer {
   }
 
   /// DB를 열고 등록된 얼굴들을 메모리로 불러온다.
+  ///
+  /// 반환 타입을 적지 않아 `dynamic` 으로 추론되지만, `async` 함수이므로
+  /// 실제로는 `Future` 를 돌려준다. `Future<void>` 로 명시하는 편이 낫다.
   initDB() async {
+    // DB 파일을 열고 테이블이 없으면 만든다. 이게 끝나야 조회가 가능하므로 await.
     await dbHelper.init();
+    // ⚠️ 여기는 await 를 붙이지 않았다(아래 함수가 void 반환이라 붙일 수도 없다).
+    // 즉 initDB() 가 끝나도 캐시 로딩은 아직 진행 중일 수 있다.
     loadRegisteredFaces();
   }
 
   /// DB에 저장된 모든 얼굴을 읽어 [registered] 캐시에 채운다.
+  ///
+  /// ⚠️ `void` + `async` 조합이라 **완료를 기다릴 수 없다**(fire-and-forget).
+  /// 호출한 쪽에서 "다 불러왔는지" 알 방법이 없고, 내부에서 예외가 나도
+  /// 아무도 잡지 못한다. `Future<void>` 로 바꾸면 await 할 수 있다.
   void loadRegisteredFaces() async {
     final allRows = await dbHelper.queryAllRows();
     // debugPrint('query all rows:');
@@ -242,6 +258,8 @@ class Recognizer {
     }
 
     // 1차원 배열을 모델 입력 모양인 4차원으로 재구성한다.
+    // `reshape()` 는 Dart 기본 기능이 아니라 tflite_flutter 가 List 에 붙여준
+    // 확장(extension) 메서드다. 이 패키지를 import 해야만 쓸 수 있다.
     return reshapedArray.reshape([1, WIDTH, HEIGHT, 3]);
   }
 
@@ -253,8 +271,10 @@ class Recognizer {
   /// 반환값의 `name` 은 가장 닮은 사람 이름, `distance` 는 그 유사도다.
   Recognition recognize(img.Image image, Rect location) {
     //TODO crop face from image resize it and convert it to float array
-    // 이미지를 모델 입력 형태로 변환
+    // 이미지를 모델 입력 형태([1,160,160,3])로 변환한다.
     var input = imageToArray(image);
+    // `shape` 도 tflite_flutter 의 확장 게터로, 중첩 List 의 모양을 알려준다.
+    // 여기서는 "[1, 160, 160, 3]" 이 찍혀야 정상이다.
     print(input.shape.toString());
 
     //TODO output array

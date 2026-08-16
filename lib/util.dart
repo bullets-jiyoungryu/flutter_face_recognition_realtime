@@ -1,6 +1,12 @@
+// Uint8List: 0~255 사이의 값만 담는 바이트 배열.
+// 카메라 프레임의 원본 데이터가 이 타입으로 들어온다.
 import 'dart:typed_data';
 
+// camera 패키지: 카메라 프레임을 뜻하는 CameraImage 타입을 쓰기 위해 필요하다.
 import 'package:camera/camera.dart';
+
+// image 패키지: 픽셀 단위로 이미지를 다루는 img.Image 타입.
+// `as img` 는 Flutter 기본 Image 위젯과 이름이 겹치는 것을 피하기 위한 별칭이다.
 import 'package:image/image.dart' as img;
 
 /// 카메라가 준 원본 프레임(`CameraImage`)을 이미지 처리용(`img.Image`)으로
@@ -14,7 +20,18 @@ import 'package:image/image.dart' as img;
 /// 반면 얼굴을 잘라내고(crop) 크기를 바꾸려면 image 패키지의 `img.Image` 가
 /// 필요하다. 그 사이를 이어주는 것이 이 클래스다.
 ///
+/// **YUV가 무엇인지 한 문단 요약**
+/// RGB가 "빨강·초록·파랑을 얼마씩 섞을까"라면, YUV는 "얼마나 밝은가(Y) +
+/// 어떤 색인가(U, V)"로 나눠 저장하는 방식이다. 사람 눈은 밝기 변화에는
+/// 민감하지만 색 변화에는 둔하다. 그래서 밝기는 픽셀마다 저장하고 색은
+/// 가로·세로 2픽셀씩 묶어 하나만 저장해도 티가 잘 안 난다.
+/// 이 덕분에 데이터가 절반으로 줄어 카메라가 이 포맷을 선호한다.
+/// 아래 `convertNV21()` 의 복잡한 인덱스 계산은 전부 이 "색은 2픽셀당 하나"
+/// 구조에서 나온다.
+///
 /// 대부분 `static` 이라 객체를 만들지 않고 `Util.convertNV21(frame)` 처럼 바로 쓴다.
+/// (아래쪽 `convertYUV420ToImage` 와 `yuv2rgb` 만 static 이 아닌데,
+///  일관성이 깨진 부분이며 어차피 현재 쓰이지 않는 코드다)
 class Util {
   /// iOS 프레임 데이터 앞부분에 붙어 있는 헤더 크기(바이트).
   /// 실제 픽셀은 이 위치부터 시작하므로 건너뛰어야 한다.
@@ -56,6 +73,8 @@ class Util {
     final height = image.height.toInt();
 
     // NV21은 Y와 UV가 한 덩어리로 들어온다.
+    // 그래서 planes 가 하나뿐이고, `planes[0]` 안에 밝기와 색상이 모두 있다.
+    // (화면들의 getInputImage() 가 `planes.length != 1` 이면 포기하는 이유가 이것이다)
     Uint8List yuv420sp = image.planes[0].bytes;
 
     final outImg = img.Image(height: height, width: width);
@@ -67,8 +86,10 @@ class Util {
       // uvp = 이 줄에 해당하는 색상 데이터 위치.
       // `j >> 1` 은 j ~/ 2 와 같다 (색상은 세로로 2줄당 1개만 있으므로).
       int uvp = frameSize + (j >> 1) * width, u = 0, v = 0;
+      // i = 가로 위치. i 와 yp 가 함께 1씩 증가한다.
       for (int i = 0; i < width; i++, yp++) {
         // 밝기 값. NV21의 Y는 16부터 시작하므로 16을 뺀다.
+        // `0xff &` 는 하위 8비트만 남기라는 뜻으로, 값이 0~255 범위임을 보장한다.
         int y = (0xff & yuv420sp[yp]) - 16;
         if (y < 0) y = 0;
         // 색상은 가로로도 2픽셀당 1개라 짝수 번째 픽셀에서만 새로 읽는다.
@@ -77,6 +98,12 @@ class Util {
           v = (0xff & yuv420sp[uvp++]) - 128;
           u = (0xff & yuv420sp[uvp++]) - 128;
         }
+        // YUV → RGB 변환 공식. 원래는 소수점 계산이지만,
+        // 계수를 1024배 해서 정수만으로 계산한다(정수 연산이 훨씬 빠르다).
+        //   실수 버전:  R = 1.164*Y + 1.596*V
+        //   정수 버전:  R = 1192*Y + 1634*V   (= 실수 계수 × 1024)
+        // 따라서 아래 r, g, b 는 실제 색상 값의 **1024배** 상태다.
+        // 마지막에 setPixelRgb 로 넘길 때 다시 나눠 0~255 로 되돌린다.
         int y1192 = 1192 * y;
         int r = (y1192 + 1634 * v);
         int g = (y1192 - 833 * v - 400 * u);
@@ -99,7 +126,15 @@ class Util {
 
         // I don't know how these r, g, b values are defined, I'm just copying what you had bellow and
         // getting their 8-bit values.
-        // 확대해 뒀던 값을 다시 0~255 범위로 되돌려 픽셀에 기록한다.
+        // 1024배 확대해 뒀던 값을 다시 0~255 범위로 되돌려 픽셀에 기록한다.
+        //
+        // 비트 연산이 복잡해 보이지만 세 줄 모두 결국 **1024로 나누기**다.
+        //   ((r << 6) & 0xff0000) >> 16  →  r을 왼쪽 6칸, 다시 오른쪽 16칸 = r >> 10
+        //   ((g >> 2) & 0xff00) >> 8     →  g >> 2 후 다시 >> 8         = g >> 10
+        //   (b >> 10) & 0xff             →  b >> 10
+        // (`>> 10` 은 2¹⁰ = 1024 로 나누는 것과 같다. 중간의 `&` 는 원하는
+        //  8비트만 남겨 다른 자리 값이 섞이지 않게 하는 안전장치다)
+        // 굳이 세 줄의 표현 방식이 다른 이유는 없다. 원본 코드를 그대로 옮긴 것이다.
         outImg.setPixelRgb(
           i,
           j,
