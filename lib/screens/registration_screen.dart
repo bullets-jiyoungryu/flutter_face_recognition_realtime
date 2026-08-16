@@ -9,10 +9,14 @@ import 'package:flutter/material.dart';
 
 // DeviceOrientation (기기 방향) 을 쓰기 위해 필요하다.
 import 'package:flutter/services.dart';
+import 'package:flutter_face_recognition_realtime/util.dart';
 
 // ML Kit 얼굴 검출. "사진 속 어디에 얼굴이 있는가"를 찾아준다.
 // (누구인지 알아내는 것은 ML Kit이 아니라 우리 FaceNet 모델의 몫이다)
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+// 이미지 회전/자르기용. Flutter 의 Image 위젯과 이름이 겹치므로
+// `as img` 별칭을 붙여 img.Image 처럼 구분해서 쓴다.
+import 'package:image/image.dart' as img;
 
 // 전역 변수 cameras 를 쓰기 위해 main.dart 를 가져온다.
 import '../main.dart';
@@ -160,11 +164,16 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   /// 이걸 빼먹으면 화면을 나가도 카메라가 계속 켜져 있어 배터리를 먹고,
   /// 다음에 다시 들어올 때 카메라를 못 여는 문제가 생긴다.
   ///
-  /// 💡 나중에 faceDetector 와 recognizer 를 추가하면 여기서 함께 정리해야 한다.
-  ///    예) faceDetector.close(); recognizer.close();
+  /// ML Kit 검출기도 네이티브 자원을 잡고 있으므로 함께 닫아야 한다.
+  /// 닫지 않으면 화면을 드나들 때마다 검출기가 쌓여 메모리가 계속 늘어난다.
+  ///
+  /// 💡 나중에 recognizer 를 추가하면 여기서 함께 정리해야 한다.
+  ///    예) recognizer.close();
   @override
   void dispose() {
     controller?.dispose();
+    faceDetector.close();
+    // super.dispose() 는 항상 **마지막에** 호출하는 것이 규칙이다.
     super.dispose();
   }
 
@@ -205,15 +214,19 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
     print('faces=' + faces.length.toString());
 
     //TODO perform face recognition on detected faces
+    performFaceRecognition(faces);
 
-    // 처리가 끝났으니 다음 프레임을 받을 수 있도록 깃발을 내린다.
-    // 검출 결과를 _scanResults 에 담아야 buildResult() 가 사각형을 그린다.
-    // 이 대입을 빠뜨리면 _scanResults 가 계속 null 이라
-    // 화면에 'Camera is not initialized' 문구만 표시된다.
-    setState(() {
-      isBusy = false;
-      _scanResults = faces;
-    });
+    // isBusy 를 내리고 _scanResults 에 결과를 담는 일은
+    // performFaceRecognition() 끝부분의 setState 가 대신 처리한다.
+    // 그래서 여기서는 아무것도 하지 않는다. (중복 setState 방지)
+    //
+    // ⚠️ 단, performFaceRecognition() 이 도중에 예외로 빠져나가면
+    //    isBusy 가 true 로 남아 이후 모든 프레임이 무시된다.
+    //    안전하게 하려면 try/finally 로 감싸 finally 에서 내려주는 것이 좋다.
+    // setState(() {
+    //   isBusy = false;
+    //   _scanResults = faces;
+    // });
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -229,41 +242,47 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   //   ⑤ 이름 입력 다이얼로그 띄우기
   // ─────────────────────────────────────────────────────────────
 
-  // img.Image? image;
-  // bool register = false;
-  // //TODO perform Face Recognition
-  // performFaceRecognition(List<Face> faces) async {
-  //   recognitions.clear();
-  //
-  //   //TODO convert CameraImage to Image and rotate it so that our frame will be in a portrait
-  //   image = Platform.isIOS
-  //       ? Util.convertBGRA8888ToImage(frame!)
-  //       : Util.convertNV21(frame!);
-  //   image =img.copyRotate(image!, angle: camDirec == CameraLensDirection.front?270:90);
-  //
-  //   if(register){
-  //     for (Face face in faces) {
-  //       Rect faceRect = face.boundingBox;
-  //       //TODO crop face
-  //       img.Image croppedFace = img.copyCrop(image!, x:faceRect.left.toInt(),y:faceRect.top.toInt(),width:faceRect.width.toInt(),height:faceRect.height.toInt());
-  //
-  //       //TODO pass cropped face to face recognition model
-  //
-  //
-  //       //TODO show face registration dialogue
-  //
-  //
-  //     }
-  //
-  //     register = false;
-  //   }
-  //
-  //   setState(() {
-  //     isBusy  = false;
-  //     _scanResults = faces;
-  //   });
-  //
-  // }
+  img.Image? image;
+  bool register = false;
+
+  //TODO perform Face Recognition
+  performFaceRecognition(List<Face> faces) async {
+    recognitions.clear();
+
+    //TODO convert CameraImage to Image and rotate it so that our frame will be in a portrait
+    image = Platform.isIOS
+        ? Util.convertBGRA8888ToImage(frame!)
+        : Util.convertNV21(frame!);
+    image = img.copyRotate(
+      image!,
+      angle: camDirec == CameraLensDirection.front ? 270 : 90,
+    );
+
+    if (register) {
+      for (Face face in faces) {
+        Rect faceRect = face.boundingBox;
+        //TODO crop face
+        img.Image croppedFace = img.copyCrop(
+          image!,
+          x: faceRect.left.toInt(),
+          y: faceRect.top.toInt(),
+          width: faceRect.width.toInt(),
+          height: faceRect.height.toInt(),
+        );
+
+        //TODO pass cropped face to face recognition model
+
+        //TODO show face registration dialogue
+      }
+
+      register = false;
+    }
+
+    setState(() {
+      isBusy = false;
+      _scanResults = faces;
+    });
+  }
 
   //TODO Face Registration Dialogue
   // TextEditingController textEditingController = TextEditingController();
