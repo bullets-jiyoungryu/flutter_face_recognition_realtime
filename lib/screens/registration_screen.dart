@@ -165,15 +165,14 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   /// 이걸 빼먹으면 화면을 나가도 카메라가 계속 켜져 있어 배터리를 먹고,
   /// 다음에 다시 들어올 때 카메라를 못 여는 문제가 생긴다.
   ///
-  /// ML Kit 검출기도 네이티브 자원을 잡고 있으므로 함께 닫아야 한다.
-  /// 닫지 않으면 화면을 드나들 때마다 검출기가 쌓여 메모리가 계속 늘어난다.
-  ///
-  /// 💡 나중에 recognizer 를 추가하면 여기서 함께 정리해야 한다.
-  ///    예) recognizer.close();
+  /// ML Kit 검출기와 TFLite 인터프리터도 네이티브 자원을 잡고 있으므로
+  /// 함께 닫아야 한다. 닫지 않으면 화면을 드나들 때마다 쌓여서
+  /// 메모리가 계속 늘어난다. 특히 facenet.tflite 는 23MB 라 부담이 크다.
   @override
   void dispose() {
     controller?.dispose();
     faceDetector.close();
+    recognizer.close();
     // super.dispose() 는 항상 **마지막에** 호출하는 것이 규칙이다.
     super.dispose();
   }
@@ -278,6 +277,7 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
         );
 
         //TODO show face registration dialogue
+        showFaceRegistrationDialogue(croppedFace, recognition);
       }
 
       register = false;
@@ -290,104 +290,100 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   }
 
   //TODO Face Registration Dialogue
-  // TextEditingController textEditingController = TextEditingController();
-  // showFaceRegistrationDialogue(img.Image croppedFace, Recognition recognition){
-  //   showDialog(
-  //     context: context,
-  //     builder: (ctx) => Dialog(
-  //       backgroundColor: Colors.transparent,
-  //       insetPadding: const EdgeInsets.symmetric(
-  //         horizontal: 20,
-  //         vertical: 60,
-  //       ),
-  //       child: ClipRRect(
-  //         borderRadius: BorderRadius.circular(20),
-  //         child: BackdropFilter(
-  //           filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-  //           child: Container(
-  //             padding: const EdgeInsets.all(20),
-  //             decoration: BoxDecoration(
-  //               color: Colors.white.withAlpha(30),
-  //               borderRadius: BorderRadius.circular(20),
-  //               border: Border.all(color: Colors.white.withAlpha(40)),
-  //             ),
-  //             child: SingleChildScrollView(
-  //               child: Column(
-  //                 mainAxisSize: MainAxisSize.min,
-  //                 children: [
-  //                   const Text(
-  //                     "Register Your Face",
-  //                     textAlign: TextAlign.center,
-  //                     style: TextStyle(
-  //                       fontSize: 20,
-  //                       color: Colors.white,
-  //                       fontWeight: FontWeight.bold,
-  //                     ),
-  //                   ),
-  //                   const SizedBox(height: 20),
-  //                   ClipRRect(
-  //                     borderRadius: BorderRadius.circular(100),
-  //                     child: Image.memory(
-  //                       Uint8List.fromList(img.encodeBmp(croppedFace)),
-  //                       width: 150,
-  //                       height: 150,
-  //                       fit: BoxFit.cover,
-  //                     ),
-  //                   ),
-  //                   const SizedBox(height: 20),
-  //                   TextField(
-  //                     controller: textEditingController,
-  //                     style: const TextStyle(color: Colors.white),
-  //                     decoration: InputDecoration(
-  //                       hintText: "Enter your name",
-  //                       hintStyle: const TextStyle(color: Colors.white70),
-  //                       filled: true,
-  //                       fillColor: Colors.white.withAlpha(80),
-  //                       border: OutlineInputBorder(
-  //                         borderRadius: BorderRadius.circular(12),
-  //                         borderSide: BorderSide.none,
-  //                       ),
-  //                     ),
-  //                   ),
-  //                   const SizedBox(height: 20),
-  //                   SizedBox(
-  //                     width: double.infinity,
-  //                     child: ElevatedButton.icon(
-  //                       onPressed: () {
-  //                         recognizer.registerFaceInDB(
-  //                           textEditingController.text.trim(),
-  //                           recognition.embeddings,
-  //                           Uint8List.fromList(img.encodeBmp(croppedFace!)),
-  //                         );
-  //                         Navigator.pop(context);
-  //                         Navigator.pop(context); // Close dialog
-  //                         ScaffoldMessenger.of(context).showSnackBar(
-  //                           const SnackBar(
-  //                             content: Text("Face Registered"),
-  //                           ),
-  //                         );
-  //                       },
-  //                       icon: const Icon(Icons.check),
-  //                       label: const Text("Register"),
-  //                       style: ElevatedButton.styleFrom(
-  //                         backgroundColor: Colors.deepPurple.shade300,
-  //                         foregroundColor: Colors.white,
-  //                         padding: const EdgeInsets.symmetric(vertical: 14),
-  //                         shape: RoundedRectangleBorder(
-  //                           borderRadius: BorderRadius.circular(12),
-  //                         ),
-  //                       ),
-  //                     ),
-  //                   ),
-  //                 ],
-  //               ),
-  //             ),
-  //           ),
-  //         ),
-  //       ),
-  //     )
-  //   );
-  // }
+  TextEditingController textEditingController = TextEditingController();
+
+  showFaceRegistrationDialogue(img.Image croppedFace, Recognition recognition) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 60),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+            child: Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.white.withAlpha(30),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.white.withAlpha(40)),
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      "Register Your Face",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 20,
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(100),
+                      child: Image.memory(
+                        Uint8List.fromList(img.encodeBmp(croppedFace)),
+                        width: 150,
+                        height: 150,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    TextField(
+                      controller: textEditingController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: "Enter your name",
+                        hintStyle: const TextStyle(color: Colors.white70),
+                        filled: true,
+                        fillColor: Colors.white.withAlpha(80),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          recognizer.registerFaceInDB(
+                            textEditingController.text.trim(),
+                            recognition.embeddings,
+                            Uint8List.fromList(img.encodeBmp(croppedFace!)),
+                          );
+                          Navigator.pop(context);
+                          Navigator.pop(context); // Close dialog
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text("Face Registered")),
+                          );
+                        },
+                        icon: const Icon(Icons.check),
+                        label: const Text("Register"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.deepPurple.shade300,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
   // //TODO convert CameraImage to InputImage
   /// 기기 방향을 각도로 바꾸기 위한 대응표.
@@ -594,9 +590,14 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
                   // 버튼 사이를 벌리려면 width 를 줘야 한다.
                   const SizedBox(height: 10),
                   // 얼굴 등록 버튼.
-                  // ⚠️ onPressed 가 비어 있어 **아무 동작도 하지 않는다.**
-                  //    실습: 여기에 `setState(() => register = true);` 를 넣으면
-                  //    다음 프레임에서 얼굴을 잘라 등록 절차가 시작되도록 만들 수 있다.
+                  //
+                  // 이 버튼은 등록을 "예약"만 한다. 여기서 바로 얼굴을 자르지 않고
+                  // register 깃발만 세워두면, 다음 카메라 프레임이 들어왔을 때
+                  // performFaceRecognition() 의 `if (register)` 블록이 실행되어
+                  // 크롭 → 임베딩 추출 → 이름 입력 다이얼로그로 이어진다.
+                  //
+                  // setState 로 감쌀 필요는 없다. register 는 build() 안에서
+                  // 읽지 않으므로 화면을 다시 그릴 이유가 없기 때문이다.
                   AnimatedSwitcher(
                     duration: const Duration(milliseconds: 300),
                     child: IconButton(
@@ -606,7 +607,9 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
                       ),
                       iconSize: 40,
                       color: Colors.black,
-                      onPressed: () {},
+                      onPressed: () {
+                        register = true;
+                      },
                     ),
                   ),
                 ],
