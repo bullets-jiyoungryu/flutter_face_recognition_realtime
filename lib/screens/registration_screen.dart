@@ -207,8 +207,12 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
     //TODO perform face recognition on detected faces
 
     // 처리가 끝났으니 다음 프레임을 받을 수 있도록 깃발을 내린다.
+    // 검출 결과를 _scanResults 에 담아야 buildResult() 가 사각형을 그린다.
+    // 이 대입을 빠뜨리면 _scanResults 가 계속 null 이라
+    // 화면에 'Camera is not initialized' 문구만 표시된다.
     setState(() {
       isBusy = false;
+      _scanResults = faces;
     });
   }
 
@@ -440,21 +444,23 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   // build() 안의 "View for displaying rectangles" 부분 주석도 함께 풀어야 한다.
   // 주의: 여기서 넘기는 imageSize 는 width/height 를 **바꿔서** 전달한다.
   //       카메라 프레임이 가로로 누워 들어오기 때문이다.
-  // Widget buildResult() {
-  //   if (_scanResults == null ||
-  //       controller == null ||
-  //       !controller.value.isInitialized) {
-  //     return const Center(child: Text('Camera is not initialized'));
-  //   }
-  //   final Size imageSize = Size(
-  //     controller.value.previewSize!.height,
-  //     controller.value.previewSize!.width,
-  //   );
-  //   CustomPainter painter = FaceDetectorPainter(imageSize, _scanResults, camDirec);
-  //   return CustomPaint(
-  //     painter: painter,
-  //   );
-  // }
+  Widget buildResult() {
+    if (_scanResults == null ||
+        controller == null ||
+        !controller.value.isInitialized) {
+      return const Center(child: Text('Camera is not initialized'));
+    }
+    final Size imageSize = Size(
+      controller.value.previewSize!.height,
+      controller.value.previewSize!.width,
+    );
+    CustomPainter painter = FaceDetectorPainter(
+      imageSize,
+      _scanResults,
+      camDirec,
+    );
+    return CustomPaint(painter: painter);
+  }
 
   //TODO toggle camera direction
   /// 전면 ↔ 후면 카메라를 전환한다.
@@ -508,14 +514,15 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
       );
 
       //TODO View for displaying rectangles around detected aces
-      // stackChildren.add(
-      //   Positioned(
-      //       top: 0.0,
-      //       left: 0.0,
-      //       width: size.width,
-      //       height: size.height,
-      //       child: buildResult()),
-      // );
+      stackChildren.add(
+        Positioned(
+          top: 0.0,
+          left: 0.0,
+          width: size.width,
+          height: size.height,
+          child: buildResult(),
+        ),
+      );
     }
 
     //TODO View for displaying the bar to switch camera direction or for registering faces
