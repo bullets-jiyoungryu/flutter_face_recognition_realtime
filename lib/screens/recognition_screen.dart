@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 // DeviceOrientation (기기 방향) 을 쓰기 위해 필요하다.
 import 'package:flutter/services.dart';
+import 'package:flutter_face_recognition_realtime/ml/liveness_detector.dart';
 import 'package:flutter_face_recognition_realtime/ml/recognizer.dart';
 import 'package:flutter_face_recognition_realtime/util.dart';
 
@@ -78,6 +79,8 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   //TODO declare face recognizer
   late Recognizer recognizer;
 
+  late LivenessDetector livenessDetector;
+
   /// 화면이 처음 만들어질 때 한 번 호출된다.
   @override
   void initState() {
@@ -91,6 +94,8 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
 
     //TODO initialize face recognizer
     recognizer = Recognizer();
+
+    livenessDetector = LivenessDetector();
 
     //TODO initialize camera footage
     initializeCamera();
@@ -250,13 +255,18 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
         height: faceRect.height.toInt(),
       );
 
+      img.Image face224 = img.copyResize(croppedFace, width: 224, height: 224);
+      bool isLive = await livenessDetector.isLive(face224);
+
       //TODO pass cropped face to face recognition model
       Recognition recognition = await recognizer.recognize(
         croppedFace,
         faceRect,
       );
 
-      if (recognition.distance < 0.3) {
+      if (isLive == false) {
+        recognition.name = 'Spoof';
+      } else if (recognition.distance < 0.3) {
         recognition.name = 'Unknown';
       }
 
