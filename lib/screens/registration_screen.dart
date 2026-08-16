@@ -1,12 +1,15 @@
 // Platform.isAndroid / Platform.isIOS 로 현재 OS를 판별하기 위해 필요하다.
 import 'dart:io';
+
 // ImageFilter (배경 흐림 효과) 를 쓰기 위해 필요하다.
 import 'dart:ui';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+
 // DeviceOrientation (기기 방향) 을 쓰기 위해 필요하다.
 import 'package:flutter/services.dart';
+
 // ML Kit 얼굴 검출. "사진 속 어디에 얼굴이 있는가"를 찾아준다.
 // (누구인지 알아내는 것은 ML Kit이 아니라 우리 FaceNet 모델의 몫이다)
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
@@ -72,7 +75,7 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   late List<Recognition> recognitions = [];
 
   //TODO declare face detector
-  // 예) late FaceDetector faceDetector;
+  late FaceDetector faceDetector;
 
   //TODO declare face recognizer
   // 예) late Recognizer recognizer;
@@ -83,7 +86,10 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
     super.initState();
 
     //TODO initialize face detector
-    // 예) faceDetector = FaceDetector(options: FaceDetectorOptions());
+    FaceDetectorOptions options = FaceDetectorOptions(
+      performanceMode: FaceDetectorMode.fast,
+    );
+    faceDetector = FaceDetector(options: options);
 
     //TODO initialize face recognizer
     // 예) recognizer = Recognizer();
@@ -186,8 +192,17 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   /// 중간에 return 하는 분기를 만들었다면 거기서도 꼭 되돌려 놓자.
   doFaceDetectionOnFrame() async {
     //TODO convert frame into InputImage format
+    InputImage? inputImage = getInputImage();
+    if (inputImage == null) {
+      setState(() {
+        isBusy = false;
+      });
+      return;
+    }
 
     //TODO pass InputImage to face detection model and detect faces
+    List<Face> faces = await faceDetector.processImage(inputImage);
+    print('faces=' + faces.length.toString());
 
     //TODO perform face recognition on detected faces
 
