@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 // DeviceOrientation (기기 방향) 을 쓰기 위해 필요하다.
 import 'package:flutter/services.dart';
+import 'package:flutter_face_recognition_realtime/ml/recognizer.dart';
 import 'package:flutter_face_recognition_realtime/util.dart';
 
 // ML Kit 얼굴 검출. "사진 속 어디에 얼굴이 있는가"를 찾아준다.
@@ -82,7 +83,7 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
   late FaceDetector faceDetector;
 
   //TODO declare face recognizer
-  // 예) late Recognizer recognizer;
+  late Recognizer recognizer;
 
   /// 화면이 처음 만들어질 때 한 번 호출된다.
   @override
@@ -96,7 +97,7 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
     faceDetector = FaceDetector(options: options);
 
     //TODO initialize face recognizer
-    // 예) recognizer = Recognizer();
+    recognizer = Recognizer();
 
     //TODO initialize camera footage
     initializeCamera();
@@ -271,6 +272,10 @@ class _RecognitionScreenState extends State<RegistrationScreen> {
         );
 
         //TODO pass cropped face to face recognition model
+        Recognition recognition = await recognizer.recognize(
+          croppedFace,
+          faceRect,
+        );
 
         //TODO show face registration dialogue
       }
