@@ -1,4 +1,18 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- 갤러리 저장(gal 플러그인)용 권한.
+         Android 10(API 29) 이하에서만 필요하고, 11(API 30)부터는
+         MediaStore 를 통해 권한 없이 저장할 수 있으므로 maxSdkVersion 으로 막아둔다.
+         카메라 권한은 camera_android_camerax 플러그인 매니페스트에서 머지되므로
+         여기에 따로 선언하지 않는다. -->
+    <!-- camera_android_camerax 도 같은 권한을 maxSdkVersion="28" 로 선언한다.
+         그대로 두면 매니페스트 병합이 충돌로 실패하므로,
+         tools:replace 로 이 앱의 값(29)을 쓰겠다고 명시한다. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29"
+        tools:replace="android:maxSdkVersion" />
+
     <application
         android:label="flutter_face_recognition_realtime"
         android:name="${applicationName}"

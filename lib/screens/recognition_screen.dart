@@ -7,11 +7,16 @@ import 'dart:ui';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 
-// DeviceOrientation (기기 방향) 을 쓰기 위해 필요하다.
+// DeviceOrientation (기기 방향) 과 Uint8List (JPEG 바이트 배열) 를 쓰기 위해 필요하다.
+// (services.dart 가 dart:typed_data 를 함께 내보내므로 따로 import 하지 않아도 된다)
 import 'package:flutter/services.dart';
 import 'package:flutter_face_recognition_realtime/ml/liveness_detector.dart';
 import 'package:flutter_face_recognition_realtime/ml/recognizer.dart';
+import 'package:flutter_face_recognition_realtime/pose_shutter.dart';
 import 'package:flutter_face_recognition_realtime/util.dart';
+
+// 촬영한 사진을 기기 갤러리에 저장한다. 권한 요청까지 이 패키지가 처리한다.
+import 'package:gal/gal.dart';
 
 // ML Kit 얼굴 검출. "사진 속 어디에 얼굴이 있는가"를 찾아준다.
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
@@ -41,6 +46,7 @@ import '../ml/recognition.dart';
 ///        ├ livenessDetector.isLive()  진짜 얼굴인가? (사진이면 Spoof)
 ///        └ recognizer.recognize()     누구인가? (유사도가 낮으면 Unknown)
 ///   → buildResult() / FaceDetectorPainter 로 화면에 사각형과 이름표를 그림
+///   → buildHeadPoseOverlay() 로 화면 위쪽에 머리 자세 각도를 표시
 /// ```
 ///
 /// 세 개의 모델이 각자 다른 질문에 답한다는 점이 이 화면의 핵심이다.
@@ -82,6 +88,48 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   /// `FaceDetectorPainter` 가 이 목록을 받아 화면에 사각형과 이름표를 그린다.
   /// 프레임마다 비우고 다시 채운다.
   late List<Recognition> recognitions = [];
+
+  /// **머리 자세(head pose) 각도.** 화면 위쪽 HUD 에 실시간으로 표시한다.
+  ///
+  /// 세 값 모두 ML Kit 이 얼굴을 검출하면서 **함께 계산해 주는 값**이다.
+  /// 즉 tflite 모델 세 개(FaceNet/라이브니스/MobileFaceNet) 와는 무관하며,
+  /// 각도를 얻기 위해 따로 추론을 돌리지 않는다.
+  ///
+  /// 단위는 도(degree) 이고, 기준은 사람의 좌우가 아니라
+  /// **ML Kit 이 처리한 이미지의 좌우**다.
+  /// - [headAngleX] pitch. 양수면 위를 본다.
+  /// - [headAngleY] yaw.   양수면 이미지의 오른쪽으로 고개를 돌렸다.
+  /// - [headAngleZ] roll.  양수면 이미지 평면에서 반시계로 갸우뚱했다.
+  ///
+  /// 얼굴이 없거나 ML Kit 이 그 각도를 계산하지 않았으면 null 이다.
+  /// ⚠️ 특히 [headAngleY] 는 `FaceDetectorMode.fast` 에서 보장되지 않는다는
+  ///    설명이 플러그인 주석에 남아 있다. 실기기에서 계속 `—` 로 나온다면
+  ///    initState 의 performanceMode 를 accurate 로 올려야 한다.
+  double? headAngleX;
+  double? headAngleY;
+  double? headAngleZ;
+
+  /// 이번 프레임에서 검출된 얼굴 수. HUD 오른쪽 위에 함께 보여준다.
+  int faceCount = 0;
+
+  /// **머리 자세 자동 촬영 판정기.** (`pose_shutter.dart`)
+  ///
+  /// 좌우 45도 / 위아래 30도에 도달하면 방향마다 한 장씩 촬영 신호를 낸다.
+  /// 떨림으로 인한 연발 촬영을 막는 규칙이 그 안에 들어 있다.
+  final PoseShutter poseShutter = PoseShutter();
+
+  /// 갤러리에서 사진이 모일 앨범 이름.
+  static const String galleryAlbum = 'Head Pose';
+
+  /// 마지막 촬영/저장 결과 메시지. HUD 아래쪽에 잠깐 보여준다.
+  /// 아직 아무것도 찍지 않았으면 null 이다.
+  String? captureMessage;
+
+  /// "정면으로 본다" 고 판단할 각도 기준(도).
+  ///
+  /// 이 값보다 각도의 절대값이 작으면 HUD 에 초록색 `정면` 으로 표시한다.
+  /// 라이브니스 임계값과 마찬가지로 **실기기에서 보며 조정할 값**이다.
+  static const double frontalThreshold = 10;
 
   //TODO declare face detector
   /// ML Kit 얼굴 **검출기**. 사진 속 얼굴의 위치(사각형)를 찾아준다.
@@ -266,10 +314,132 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   /// 이번 프레임을 이미지로 변환·회전한 결과. 여기서 얼굴을 잘라낸다.
   img.Image? image;
 
+  /// 이번 프레임의 **머리 자세 각도를 갱신한다.**
+  ///
+  /// ML Kit 이 이미 계산해 둔 값을 꺼내 필드에 옮겨 담기만 하므로 매우 가볍다.
+  /// 화면 갱신은 여기서 하지 않는다 — [performFaceRecognition] 끝의 setState 가
+  /// 인식 결과와 **함께** 반영한다. (프레임당 setState 를 두 번 하지 않기 위해서다)
+  ///
+  /// 얼굴이 여럿이면 **가장 큰 얼굴** 하나만 쓴다. 화면 위 HUD 는 한 명분만
+  /// 보여주며, 보통 카메라에 가장 가까운(= 가장 크게 잡힌) 사람이 대상이기 때문이다.
+  void updateHeadPose(List<Face> faces) {
+    faceCount = faces.length;
+
+    // 얼굴이 하나도 없으면 지난 프레임의 각도가 남지 않도록 비운다.
+    if (faces.isEmpty) {
+      headAngleX = null;
+      headAngleY = null;
+      headAngleZ = null;
+      return;
+    }
+
+    // 넓이(가로 x 세로)가 가장 큰 얼굴을 고른다.
+    Face primary = faces.first;
+    double primaryArea = primary.boundingBox.width * primary.boundingBox.height;
+    for (final Face face in faces) {
+      final double area = face.boundingBox.width * face.boundingBox.height;
+      if (area > primaryArea) {
+        primary = face;
+        primaryArea = area;
+      }
+    }
+
+    // ML Kit 이 계산하지 못한 각도는 null 로 그대로 들어온다.
+    // 화면에서는 `—` 로 표시된다.
+    headAngleX = primary.headEulerAngleX;
+    headAngleY = primary.headEulerAngleY;
+    headAngleZ = primary.headEulerAngleZ;
+  }
+
+  /// 머리 자세가 목표 각도에 닿았는지 보고, 닿았으면 **현재 프레임을 저장한다.**
+  ///
+  /// 판정은 [poseShutter] 가, 저장은 [saveFrameToGallery] 가 맡는다.
+  Future<void> handlePoseCapture() async {
+    // 아직 변환된 프레임이 없으면 저장할 것도 없다.
+    if (image == null) return;
+
+    final HeadPoseDirection? direction = poseShutter.update(
+      angleX: headAngleX,
+      angleY: headAngleY,
+    );
+
+    // null 이면 이번 프레임은 촬영 대상이 아니다(대부분의 프레임이 여기 해당).
+    if (direction == null) return;
+
+    await saveFrameToGallery(image!, direction);
+  }
+
+  /// 프레임 하나를 JPEG 로 만들어 갤러리에 저장한다.
+  ///
+  /// **왜 `controller.takePicture()` 를 쓰지 않는가?**
+  /// - 지금 화면은 `startImageStream` 으로 프레임을 계속 받는 중이다.
+  ///   그 상태에서 촬영 API 를 부르는 것은 기기에 따라 불안정할 수 있다.
+  /// - takePicture 도 `ResolutionPreset.medium` 을 따르므로 **해상도 이득이 없다.**
+  /// - 무엇보다 이 방식은 목표 각도를 만족한 **바로 그 프레임**이 저장된다.
+  ///   촬영 API 는 몇 프레임 뒤에 찍혀 각도가 이미 틀어져 있을 수 있다.
+  ///
+  /// ⚠️ 전면 카메라라도 저장되는 사진은 **거울처럼 반전되지 않는다.**
+  ///    프리뷰만 좌우가 뒤집혀 보일 뿐, 실제 프레임은 반전돼 있지 않기 때문이다.
+  ///    셀카처럼 반전된 사진을 원하면 `img.flipHorizontal()` 을 한 번 거치면 된다.
+  Future<void> saveFrameToGallery(
+    img.Image frameImage,
+    HeadPoseDirection direction,
+  ) async {
+    try {
+      // ① 갤러리 접근 권한. 이미 허용돼 있으면 즉시 true 가 온다.
+      //    앨범을 지정해 저장하므로 toAlbum: true 로 물어봐야 한다.
+      if (!await Gal.hasAccess(toAlbum: true)) {
+        final bool granted = await Gal.requestAccess(toAlbum: true);
+        if (!granted) {
+          // 촬영한 것으로 처리해 두면 다시 시도할 수 없으니 되돌린다.
+          poseShutter.undo(direction);
+          // 권한 팝업을 기다리는 사이 사용자가 화면을 나갔을 수 있다.
+          // 그 상태에서 setState 를 부르면 예외가 나므로 mounted 로 확인한다.
+          if (!mounted) return;
+          setState(() {
+            captureMessage = '갤러리 접근 권한이 없어 저장하지 못했습니다';
+          });
+          return;
+        }
+      }
+
+      // ② JPEG 로 인코딩한다. quality 는 0~100 이며 90 이면 눈에 띄는 손상이 거의 없다.
+      //    ⚠️ 이 계산은 UI 스레드에서 돈다. 해상도가 medium(약 480p) 이라
+      //       수십 ms 수준이지만, preset 을 올리면 그만큼 프레임이 끊긴다.
+      final Uint8List jpeg = Uint8List.fromList(
+        img.encodeJpg(frameImage, quality: 90),
+      );
+
+      // ③ 갤러리에 저장. 파일명에 방향과 시각을 넣어 나중에 구분하기 쉽게 한다.
+      await Gal.putImageBytes(
+        jpeg,
+        album: galleryAlbum,
+        name: 'headpose_${direction.fileTag}_'
+            '${DateTime.now().millisecondsSinceEpoch}',
+      );
+
+      if (!mounted) return;
+      setState(() {
+        captureMessage = '${direction.label} 저장 완료';
+      });
+    } catch (e) {
+      // 저장이 실패했으면 다시 찍을 수 있도록 되돌린다.
+      poseShutter.undo(direction);
+      if (!mounted) return;
+      setState(() {
+        captureMessage = '저장 실패: $e';
+      });
+    }
+  }
+
   //TODO perform Face Recognition
   /// 검출된 얼굴들을 잘라내어 진짜인지·누구인지 판별한다.
   /// **파이프라인의 2단계이자 이 화면의 심장이다.**
   performFaceRecognition(List<Face> faces) async {
+    // ⓪ 머리 자세부터 갱신한다. 크롭·추론보다 먼저 해두면
+    //    아래에서 예외가 나더라도 각도는 이미 최신 값이 된다.
+    updateHeadPose(faces);
+
     // 지난 프레임의 결과를 비운다. 안 비우면 결과가 계속 쌓여
     // 사라진 얼굴의 이름표까지 화면에 남는다.
     recognitions.clear();
@@ -290,6 +460,12 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       image!,
       angle: camDirec == CameraLensDirection.front ? 270 : 90,
     );
+
+    // ②-1 **머리 자세 자동 촬영.**
+    //     회전이 끝난 직후에 판정한다. 여기서 쓰는 `image` 는 얼굴만 잘라내기
+    //     전의 프레임 전체라, 저장되는 사진도 화면에 보이는 그대로다.
+    //     각도(headAngleX/Y)는 바로 위 updateHeadPose() 가 이미 채워 두었다.
+    await handlePoseCapture();
 
     // 화면에 잡힌 얼굴 수만큼 반복한다. 여러 명이 동시에 인식된다.
     // ⚠️ 얼굴 하나당 TFLite 추론이 2회(라이브니스 + FaceNet) 돌아간다.
@@ -464,6 +640,206 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     return CustomPaint(painter: painter);
   }
 
+  /// 화면 **위쪽**에 머리 자세 각도를 실시간으로 보여주는 HUD 를 만든다.
+  ///
+  /// 하단 버튼 바와 같은 유리(glass) 스타일로 맞췄다.
+  /// (ClipRRect 로 모양을 자르고 BackdropFilter 로 뒤를 흐린다)
+  Widget buildHeadPoseOverlay() {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(20),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: Colors.deepPurple.withAlpha(80),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.white.withAlpha(51)),
+          ),
+          child: Column(
+            // 내용물 높이만큼만 차지하게 한다. 안 주면 세로로 최대한 늘어난다.
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    '머리 자세 (Head Pose)',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  Text(
+                    faceCount == 0 ? '얼굴 없음' : '얼굴 $faceCount명',
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              // 세 축을 한 줄씩. 방향 단어는 **이미지 기준**이라는 점에 주의.
+              buildAngleRow('상하 (X)', headAngleX, '위', '아래'),
+              buildAngleRow('좌우 (Y)', headAngleY, '오른쪽', '왼쪽'),
+              buildAngleRow('기울기 (Z)', headAngleZ, '반시계', '시계'),
+              const SizedBox(height: 10),
+              const Divider(height: 1, color: Colors.white24),
+              const SizedBox(height: 10),
+              buildCaptureProgress(),
+              // `...[]` 는 spread 문법이다. 조건이 참일 때만 여러 위젯을
+              // children 목록에 펼쳐 넣는다.
+              if (captureMessage != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  captureMessage!,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 네 방향의 **촬영 진행 상황**을 칩으로 보여준다.
+  ///
+  /// 이미 찍은 방향은 초록색 체크로 바뀌고, 넷을 다 채우면 `완료` 가 된다.
+  /// 다시 찍으려면 하단 바의 초기화 버튼을 누르면 된다.
+  Widget buildCaptureProgress() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              '자동 촬영 (좌우 45° / 위아래 30°)',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            Text(
+              poseShutter.isComplete
+                  ? '완료 4/4'
+                  : '${poseShutter.captured.length}/4',
+              style: TextStyle(
+                color: poseShutter.isComplete
+                    ? Colors.greenAccent
+                    : Colors.white70,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        // Wrap 은 가로로 넣다가 폭이 모자라면 자동으로 다음 줄로 넘긴다.
+        // 좁은 화면에서 칩이 잘리지 않게 해준다.
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: HeadPoseDirection.values.map((HeadPoseDirection direction) {
+            final bool done = poseShutter.captured.contains(direction);
+            return Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: done
+                    ? Colors.greenAccent.withAlpha(46)
+                    : Colors.white.withAlpha(20),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: done
+                      ? Colors.greenAccent.withAlpha(140)
+                      : Colors.white24,
+                ),
+              ),
+              child: Text(
+                done ? '${direction.label} ✓' : direction.label,
+                style: TextStyle(
+                  color: done ? Colors.greenAccent : Colors.white70,
+                  fontSize: 12,
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
+  /// HUD 의 **한 줄**을 만든다. `라벨 / 각도 / 방향` 세 칸으로 이뤄진다.
+  ///
+  /// [angle] 이 null 이면 ML Kit 이 그 축을 계산하지 않았다는 뜻이라 `—` 로 그린다.
+  /// [positiveWord] 는 각도가 양수일 때, [negativeWord] 는 음수일 때 쓸 단어다.
+  Widget buildAngleRow(
+    String label,
+    double? angle,
+    String positiveWord,
+    String negativeWord,
+  ) {
+    // 부호를 항상 붙인다. 값이 0 근처에서 흔들릴 때 방향을 눈으로 따라가기 쉽다.
+    final String sign = angle == null ? '' : (angle >= 0 ? '+' : '-');
+    final String valueText = angle == null
+        ? '—'
+        : '$sign${angle.abs().toStringAsFixed(1)}°';
+
+    // 숫자만으로는 직관적이지 않으므로 방향을 말로도 적어준다.
+    final String directionText;
+    if (angle == null) {
+      directionText = '측정 안 됨';
+    } else if (angle.abs() < frontalThreshold) {
+      directionText = '정면';
+    } else {
+      directionText = angle > 0 ? positiveWord : negativeWord;
+    }
+
+    // 정면이면 초록, 틀어졌으면 주황. 한눈에 상태를 알 수 있게 색으로도 구분한다.
+    final Color valueColor = angle == null
+        ? Colors.white38
+        : (angle.abs() < frontalThreshold
+              ? Colors.greenAccent
+              : Colors.orangeAccent);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          // SizedBox 로 폭을 고정해야 세 줄의 칸이 세로로 가지런히 맞는다.
+          SizedBox(
+            width: 78,
+            child: Text(
+              label,
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+          ),
+          SizedBox(
+            width: 66,
+            child: Text(
+              valueText,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                color: valueColor,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                // 숫자 폭을 모두 같게 만들어, 값이 바뀔 때 글자가 덜컹거리지 않게 한다.
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            directionText,
+            style: TextStyle(color: valueColor, fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+
   //TODO toggle camera direction
   /// 전면 ↔ 후면 카메라를 전환한다.
   void _toggleCameraDirection() async {
@@ -521,6 +897,17 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
           child: buildResult(),
         ),
       );
+
+      // ── 3층: 머리 자세 HUD (화면 위쪽) ──
+      // 사각형·이름표보다 나중에 넣었으므로 그 위에 그려진다.
+      stackChildren.add(
+        Positioned(
+          top: 20,
+          left: 20,
+          right: 20,
+          child: buildHeadPoseOverlay(),
+        ),
+      );
     }
 
     //TODO View for displaying the bar to switch camera direction or for registering faces
@@ -562,6 +949,20 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                         _toggleCameraDirection();
                       },
                     ),
+                  ),
+                  // 자동 촬영 초기화 버튼.
+                  // 네 방향을 다 찍고 나면 더 이상 촬영되지 않으므로,
+                  // 다시 찍고 싶을 때 이 버튼으로 처음 상태로 되돌린다.
+                  IconButton(
+                    icon: const Icon(Icons.restart_alt, color: Colors.white),
+                    iconSize: 40,
+                    tooltip: '자동 촬영 초기화',
+                    onPressed: () {
+                      setState(() {
+                        poseShutter.reset();
+                        captureMessage = null;
+                      });
+                    },
                   ),
                 ],
               ),
