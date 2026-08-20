@@ -7,6 +7,9 @@ import 'package:flutter/material.dart';
 // 앱의 첫 화면. 같은 프로젝트 안의 파일은 이렇게 상대 경로로 가져온다.
 import 'screens/home_screen.dart';
 
+// 앱을 켜자마자 바로 띄울 실시간 인식 화면.
+import 'screens/recognition_screen.dart';
+
 /// 이 기기에서 사용할 수 있는 카메라 목록 (예: [0]=후면, [1]=전면).
 ///
 /// 파일 맨 바깥(최상위)에 선언했기 때문에 `import '../main.dart';` 한 줄이면
@@ -58,11 +61,30 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // MaterialApp: 화면 전환(Navigator), 테마, 폰트 등 앱의 기본 뼈대를 제공한다.
-    // home: 에 지정한 위젯이 앱을 켰을 때 보이는 첫 화면이 된다.
     //
-    // 💡 화면을 더 추가하고 이름으로 이동하고 싶다면 여기에 routes: 를 추가하면 된다.
-    //    예) routes: {'/register': (_) => const RegistrationScreen()}
     // 💡 앱 전체 색상/폰트를 바꾸려면 theme: ThemeData(...) 를 추가한다.
-    return const MaterialApp(home: HomeScreen());
+    return MaterialApp(
+      // routes: "이름 → 화면" 표. 여기 등록해 두면 앱 어디서든
+      // Navigator.pushNamed(context, '/recognize') 처럼 이름으로 이동할 수 있다.
+      //
+      // '/' 는 **최상위 화면**을 뜻하는 약속된 이름이다. home: 파라미터는
+      // routes 에 '/' 를 등록하는 것과 정확히 같은 뜻이라서, 둘을 같이 쓰면
+      // "redundant(중복)" 라는 assert 에 걸린다. 그래서 home: 은 쓰지 않는다.
+      routes: {
+        '/': (_) => const HomeScreen(),
+        '/recognize': (_) => const RecognitionScreen(),
+        // 💡 화면을 더 추가하고 싶다면 여기에 한 줄씩 넣으면 된다.
+        //    예) '/register': (_) => const RegistrationScreen(),
+      },
+
+      // initialRoute: 앱을 켰을 때 곧바로 열 화면의 이름.
+      //
+      // Flutter 는 '/recognize' 처럼 슬래시로 시작하는 이름을 받으면
+      // 경로를 앞에서부터 잘라 **'/' → '/recognize' 순서로 차곡차곡 쌓는다.**
+      // 덕분에 앱을 켜면 맨 위 RecognitionScreen 이 바로 보이고,
+      // 뒤로가기를 누르면 아래에 깔린 HomeScreen 으로 돌아간다.
+      // (initialRoute 없이 '/recognize' 만 열면 등록/목록 화면으로 갈 길이 없어진다.)
+      initialRoute: '/recognize',
+    );
   }
 }
